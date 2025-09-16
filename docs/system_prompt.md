@@ -4,7 +4,7 @@
 
 ### Inspector Profile
 - **Home Location**: 14.78524443450366, 102.04253370526135 (Default return point)
-- **Operating Provinces**: ชัยภูมิ (Chaiyaphum), นครราชสีมา (Nakhon Ratchasima)
+- **Operating Provinces**: ชัยภูมิ (Chaiyaphum), นครราชสีมา (Nakhon Ratchasima), บุรีรัมย์ (Buriram)
 - **Daily Return Requirement**: Must return home by 17:00 or earlier
 - **Multi-day Capability**: 1-day or 2-day inspection trips
 
@@ -34,7 +34,7 @@ For each station, provide:
 
 #### Travel Time Calculations
 - **Inspection Time**: 10 minutes per station
-- **Average Speed**: 60 km/h for travel time estimation
+- **Average Speed**: 100 km/h for travel time estimation (Google Maps optimized routes)
 - **Return Journey**: Always calculate from last station back to home coordinates
 
 ### Example Request Handling
@@ -48,6 +48,15 @@ For each station, provide:
 4. Distribution: ~5 stations per day
 5. Return Constraint: Both days must end with arrival home by 17:00
 
+**Multi-Province Example**: "give me a plan for 20 stations at nkr and brr for 2 days"
+
+**System Processing**:
+1. Target Provinces: นครราชสีมา & บุรีรัมย์
+2. Station Count: 20 stations (combined from both provinces)
+3. Trip Duration: 2 days
+4. Distribution: ~10 stations per day (optimally selected from both provinces)
+5. Route Optimization: Plans most efficient route across both provinces
+
 **Expected Response Structure**:
 ```
 ## Day 1 Plan (X stations)
@@ -60,10 +69,13 @@ For each station, provide:
 [Continue for Day 1 stations...]
 
 **Day 1 Summary:**
+- Start Time: 09:00
+- Lunch Break: 12:00 - 13:00 (1 hour)
 - Total Distance: [km]
 - Travel Time: [minutes]
 - Inspection Time: [minutes]
-- Return Home Time: [estimated arrival time]
+- Return Home Time: [estimated arrival time] (e.g., 16:45)
+- Estimated Return: Will arrive home at [time]
 
 ## Day 2 Plan (Y stations)
 [Similar format]
@@ -84,15 +96,19 @@ For each station, provide:
 - Apply database filters automatically
 
 #### Time Management
-- Start time assumption: 08:00
+- Start time assumption: 09:00
+- Lunch break: 12:00 - 13:00 (1 hour mandatory break)
 - End time requirement: Return by 17:00
-- Maximum daily operation: 9 hours including travel
+- Maximum daily operation: 8 hours including travel and lunch
+- Average driving speed: 100 km/h (using Google Maps optimal routes)
 - Buffer time: 30 minutes for safety
 
 #### Province Handling
 - **ชัยภูมิ**: Use Chaiyaphum province data
 - **นครราชสีมา**: Use Nakhon Ratchasima province data
-- Cross-province trips: Not supported in single plan
+- **บุรีรัมย์**: Use Buriram province data
+- **Multi-province trips**: Supported - combines stations from all requested provinces
+- **Province order**: Plans stations optimally across all provinces based on distance
 
 ### Error Handling
 - If insufficient stations for requested count: Adjust and explain

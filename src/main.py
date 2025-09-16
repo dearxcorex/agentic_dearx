@@ -23,7 +23,17 @@ def main():
     print("🎯 FM Station Inspection Planner")
     print("=" * 50)
     print("Multi-day planning with automatic home return by 17:00")
-    print("Provinces: ชัยภูมิ (Chaiyaphum), นครราชสีมา (Nakhon Ratchasima)")
+    print("Provinces: ชัยภูมิ (Chaiyaphum), นครราชสีมา (Nakhon Ratchasima), บุรีรัมย์ (Buriram)")
+    print("=" * 50)
+    print("\n📝 Example Requests:")
+    print("• Thai: หา 10 สถานีในชัยภูมิ ไป 2 วัน")
+    print("• English: find 15 stations in Chaiyaphum for 2 days")
+    print("• Abbreviations: plan 8 stations in cyp for 1 day")
+    print("• Mixed: give me a plan for 20 stations at nkr and cyp in 2 day")
+    print("\n🔤 Province Codes:")
+    print("• cyp = ชัยภูมิ (Chaiyaphum)")
+    print("• nkr = นครราชสีมา (Nakhon Ratchasima)")
+    print("• brr = บุรีรัมย์ (Buriram)")
     print("=" * 50)
 
     try:

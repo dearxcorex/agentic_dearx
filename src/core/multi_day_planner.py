@@ -1,7 +1,7 @@
 """Multi-Day FM Station Inspection Planner"""
 
 import re
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from datetime import datetime, timedelta
 from haversine import haversine, Unit
 from ..database.database import StationDatabase
@@ -19,10 +19,13 @@ class MultiDayPlanner:
     HOME_LOCATION = (14.78524443450366, 102.04253370526135)
 
     # Operating constraints
-    DAILY_START_TIME = "08:00"  # 8:00 AM
+    DAILY_START_TIME = "09:00"  # 9:00 AM
     DAILY_END_TIME = "17:00"    # 5:00 PM (must be home by this time)
+    LUNCH_START_TIME = "12:00"  # 12:00 PM lunch break start
+    LUNCH_END_TIME = "13:00"    # 1:00 PM lunch break end
+    LUNCH_DURATION_MINUTES = 60  # 1 hour lunch break
     INSPECTION_TIME_MINUTES = 10  # Minutes per station
-    AVERAGE_SPEED_KMH = 60       # Average travel speed
+    AVERAGE_SPEED_KMH = 100      # Average travel speed with car using Google Maps
     SAFETY_BUFFER_MINUTES = 30   # Safety buffer for return journey
 
     def __init__(self):
@@ -52,11 +55,26 @@ class MultiDayPlanner:
 
             logger.info(f"Planning {days}-day inspection: {station_count} stations in {province}")
 
-            # Get available stations in province
-            available_stations = self.db.get_stations_by_province(province, limit=1000)
+            # Handle multiple provinces
+            available_stations = []
+            if isinstance(province, list):
+                # Multi-province request
+                for prov in province:
+                    stations = self.db.get_stations_by_province(prov, limit=1000)
+                    if stations:
+                        available_stations.extend(stations)
+                        logger.info(f"Found {len(stations)} stations in {prov}")
+                    else:
+                        logger.warning(f"No stations found in {prov}")
 
-            if not available_stations:
-                return f"No available stations found in {province}. Please check if the province name is correct."
+                if not available_stations:
+                    return f"No available stations found in any of the requested provinces: {', '.join(province)}"
+
+            else:
+                # Single province request
+                available_stations = self.db.get_stations_by_province(province, limit=1000)
+                if not available_stations:
+                    return f"No available stations found in {province}. Please check if the province name is correct."
 
             # Add distances from home
             available_stations = self.db.enrich_stations_with_distance(
@@ -73,8 +91,11 @@ class MultiDayPlanner:
             # Plan days
             daily_plans = self._plan_daily_routes(selected_stations, days)
 
-            # Generate response
-            response = self._generate_multi_day_response(daily_plans, province)
+            # Evaluate plan with fatigue and day extension analysis
+            evaluation = self._evaluate_multi_day_plan(daily_plans, days, selected_stations)
+
+            # Generate response with evaluation
+            response = self._generate_multi_day_response(daily_plans, province, evaluation)
 
             return response
 
@@ -85,18 +106,49 @@ class MultiDayPlanner:
     def _parse_multi_day_request(self, user_input: str) -> Optional[Dict]:
         """Parse user input for multi-day planning parameters"""
         try:
+            # Convert to lowercase for easier matching
+            input_lower = user_input.lower()
+
             # Extract numbers
             numbers = re.findall(r'\d+', user_input)
 
-            # Extract province names
-            provinces = ["ชัยภูมิ", "นครราชสีมา"]
-            province = None
-            for p in provinces:
-                if p in user_input:
-                    province = p
-                    break
+            # Province mapping - Thai names, English names, and abbreviations
+            province_mappings = {
+                # Thai names
+                "ชัยภูมิ": "ชัยภูมิ",
+                "นครราชสีมา": "นครราชสีมา",
+                "บุรีรัมย์": "บุรีรัมย์",
+                # English names
+                "chaiyaphum": "ชัยภูมิ",
+                "nakhon ratchasima": "นครราชสีมา",
+                "nakorn ratchasima": "นครราชสีมา",
+                "nakhonratchasima": "นครราชสีมา",
+                "nakornratchasima": "นครราชสีมา",
+                "buriram": "บุรีรัมย์",
+                "buri ram": "บุรีรัมย์",
+                # Abbreviations
+                "cyp": "ชัยภูมิ",
+                "nkr": "นครราชสีมา",
+                "brr": "บุรีรัมย์"
+            }
 
-            if not province:
+            # Find matching provinces
+            matched_provinces = []
+            for key, thai_name in province_mappings.items():
+                if key in input_lower:
+                    if thai_name not in matched_provinces:
+                        matched_provinces.append(thai_name)
+
+            # Handle multi-province requests
+            if len(matched_provinces) > 1:
+                logger.info(f"Multi-province request detected: {matched_provinces}")
+                # Use all matched provinces for multi-province planning
+                province = matched_provinces  # Pass all provinces
+                logger.info(f"Planning for multiple provinces: {province}")
+            elif len(matched_provinces) == 1:
+                province = matched_provinces[0]
+            else:
+                logger.warning(f"No valid province found in: {user_input}")
                 return None
 
             # Determine station count and days
@@ -107,13 +159,16 @@ class MultiDayPlanner:
                 station_count = int(numbers[0])
             if len(numbers) >= 2:
                 days = int(numbers[1])
-            elif "2 day" in user_input or "two day" in user_input:
+            elif "2 day" in input_lower or "two day" in input_lower or "2day" in input_lower:
                 days = 2
+
+            logger.info(f"Parsed request: {station_count} stations in {province} for {days} days")
 
             return {
                 "province": province,
                 "station_count": station_count,
-                "days": days
+                "days": days,
+                "all_provinces": matched_provinces  # For future multi-province support
             }
 
         except Exception as e:
@@ -168,8 +223,8 @@ class MultiDayPlanner:
         # Track available stations
         remaining_stations = stations.copy()
 
-        # Start time (8:00 AM)
-        current_time_minutes = 8 * 60  # 8:00 AM in minutes
+        # Start time (9:00 AM)
+        current_time_minutes = 9 * 60  # 9:00 AM in minutes
 
         while remaining_stations:
             # Find nearest station
@@ -200,13 +255,20 @@ class MultiDayPlanner:
             )
             return_time = (return_distance / self.AVERAGE_SPEED_KMH) * 60
 
-            # Check if we can complete this station and still return by 17:00
-            time_after_station = (current_time_minutes + travel_time +
-                                station_time + return_time +
-                                self.SAFETY_BUFFER_MINUTES)
+            # Calculate time after this station including lunch break
+            time_after_station = current_time_minutes + travel_time + station_time
 
-            if time_after_station > (17 * 60):  # 17:00 in minutes
-                logger.info(f"Day {day_number}: Stopping at {len(route_stations)} stations due to time constraint")
+            # Add lunch break if we cross 12:00 PM
+            lunch_added = False
+            if current_time_minutes < (12 * 60) and time_after_station >= (12 * 60):
+                time_after_station += self.LUNCH_DURATION_MINUTES
+                lunch_added = True
+
+            # Add return journey time and safety buffer
+            final_time = time_after_station + return_time + self.SAFETY_BUFFER_MINUTES
+
+            if final_time > (17 * 60):  # 17:00 in minutes
+                logger.info(f"Day {day_number}: Stopping at {len(route_stations)} stations due to time constraint (would finish at {final_time//60:02d}:{final_time%60:02d})")
                 break
 
             # Add station to route
@@ -218,6 +280,12 @@ class MultiDayPlanner:
             total_distance += min_distance
             total_time += travel_time + station_time
             current_time_minutes += travel_time + station_time
+
+            # Add lunch break time if we crossed 12:00 PM
+            if lunch_added:
+                total_time += self.LUNCH_DURATION_MINUTES
+                current_time_minutes += self.LUNCH_DURATION_MINUTES
+                logger.info(f"Day {day_number}: Added lunch break after station {len(route_stations)}")
 
             # Update position and remove station
             current_pos = (nearest_station['lat'], nearest_station['long'])
@@ -253,11 +321,52 @@ class MultiDayPlanner:
             "feasible": len(route_stations) > 0 or len(stations) == 0
         }
 
-    def _generate_multi_day_response(self, daily_plans: List[Dict], province: str) -> str:
+    def _evaluate_multi_day_plan(self, daily_plans: List[Dict], requested_days: int, all_stations: List[Dict]) -> Dict[str, Any]:
+        """Evaluate the multi-day plan for fatigue and safety"""
+        try:
+            from ..services.plan_evaluator import PlanEvaluationAgent
+
+            evaluator = PlanEvaluationAgent()
+
+            # Use all stations for route evaluation
+            evaluation = evaluator.evaluate_plan(
+                stations=all_stations,
+                start_location=self.HOME_LOCATION,
+                route_info={},
+                daily_plans=daily_plans,
+                requested_days=requested_days
+            )
+
+            logger.info(f"Multi-day plan evaluation: Score {evaluation.get('score', 0)}/100")
+
+            # Log day extension recommendations
+            day_rec = evaluation.get('day_recommendation', {})
+            if day_rec.get('extend_days', False):
+                logger.warning(f"Day extension recommended: {day_rec.get('message', 'N/A')}")
+
+            # Log fatigue analysis
+            fatigue = evaluation.get('fatigue_analysis', {})
+            if fatigue.get('is_too_demanding', False):
+                logger.warning(f"Plan is too demanding: {fatigue.get('fatigue_level', 'unknown')} fatigue level")
+
+            return evaluation
+
+        except Exception as e:
+            logger.error(f"Plan evaluation failed: {e}")
+            return {"is_optimal": True, "score": 75, "error": str(e)}
+
+    def _generate_multi_day_response(self, daily_plans: List[Dict], province, evaluation: Optional[Dict] = None) -> str:
         """Generate formatted multi-day inspection plan response"""
 
         response_parts = []
-        response_parts.append(f"# Multi-Day FM Station Inspection Plan - {province}")
+
+        # Handle multiple provinces in title
+        if isinstance(province, list):
+            province_str = " & ".join(province)
+            response_parts.append(f"# Multi-Day FM Station Inspection Plan - {province_str}")
+        else:
+            response_parts.append(f"# Multi-Day FM Station Inspection Plan - {province}")
+
         response_parts.append(f"**Home Base**: {self.HOME_LOCATION[0]:.6f}, {self.HOME_LOCATION[1]:.6f}")
         response_parts.append("")
 
@@ -291,10 +400,13 @@ class MultiDayPlanner:
 
             # Day summary
             response_parts.append(f"**Day {day_num} Summary:**")
+            response_parts.append(f"- **Start Time**: {self.DAILY_START_TIME}")
+            response_parts.append(f"- **Lunch Break**: {self.LUNCH_START_TIME} - {self.LUNCH_END_TIME} (1 hour)")
             response_parts.append(f"- **Total Distance**: {day_plan['total_distance_km']} km")
-            response_parts.append(f"- **Total Time**: {day_plan['total_time_minutes']} minutes")
-            response_parts.append(f"- **Departure**: {self.DAILY_START_TIME}")
-            response_parts.append(f"- **Return Home**: {day_plan['return_time']}")
+            response_parts.append(f"- **Travel Time**: {day_plan['total_time_minutes']} minutes")
+            response_parts.append(f"- **Inspection Time**: {len(stations) * self.INSPECTION_TIME_MINUTES} minutes")
+            response_parts.append(f"- **Return Home Time**: {day_plan['return_time']} (estimated arrival time)")
+            response_parts.append(f"- **Estimated Return**: Will arrive home at {day_plan['return_time']}")
 
             if day_plan['return_time'] > "17:00":
                 response_parts.append(f"- **⚠️ Warning**: Return time exceeds 17:00 limit")
@@ -314,6 +426,7 @@ class MultiDayPlanner:
         response_parts.append(f"- **Total Distance**: {overall_stats['total_distance']} km (over {len(daily_plans)} days)")
         response_parts.append(f"- **Total Time**: {overall_stats['total_time']} minutes")
         response_parts.append(f"- **Average per Day**: {overall_stats['total_stations'] // len(daily_plans)} stations, {overall_stats['total_distance'] / len(daily_plans):.1f} km")
+
 
         return "\n".join(response_parts)
 

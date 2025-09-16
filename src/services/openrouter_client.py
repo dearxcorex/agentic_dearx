@@ -116,17 +116,26 @@ class OpenRouterClient:
         return result["choices"][0]["message"]["content"]
 
     def parse_location(self, text: str) -> Dict[str, Any]:
-        """Parse Thai location text using specialized model"""
+        """Parse location text (Thai/English) using specialized model"""
 
-        system_prompt = """You are a Thai location parser. Extract location information from Thai text.
+        system_prompt = """You are a location parser for Thai provinces. Extract location information from Thai or English text.
+
+        Province mappings:
+        - ชัยภูมิ = Chaiyaphum = cyp
+        - นครราชสีมา = Nakhon Ratchasima = Nakorn Ratchasima = nkr
+        - บุรีรัมย์ = Buriram = Buri Ram = brr
+
+        Always return Thai province name in response.
         Return ONLY a JSON object with these fields:
-        - province: Thai province name
+        - province: Thai province name (ชัยภูมิ, นครราชสีมา, or บุรีรัมย์)
         - district: Thai district name (if mentioned)
         - subdistrict: Thai subdistrict name (if mentioned)
         - landmarks: List of landmarks mentioned
 
-        Example response:
-        {"province": "ชัยภูมิ", "district": null, "subdistrict": null, "landmarks": []}"""
+        Example responses:
+        {"province": "ชัยภูมิ", "district": null, "subdistrict": null, "landmarks": []}
+        {"province": "นครราชสีมา", "district": null, "subdistrict": null, "landmarks": []}
+        {"province": "บุรีรัมย์", "district": null, "subdistrict": null, "landmarks": []}"""
 
         prompt = f"Extract location from: {text}"
 

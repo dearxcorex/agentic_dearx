@@ -52,7 +52,7 @@ fm_station_planner/
 
 ### Home Base
 - **Location**: 14.785244, 102.042534
-- **Operating Provinces**: ชัยภูมิ (Chaiyaphum), นครราชสีมา (Nakhon Ratchasima)
+- **Operating Provinces**: ชัยภูมิ (Chaiyaphum), นครราชสีมา (Nakhon Ratchasima), บุรีรัมย์ (Buriram)
 - **Daily Return Requirement**: Must be home by 17:00 or earlier
 - **Multi-day Support**: 1-day or 2-day trips
 
@@ -166,6 +166,7 @@ The system automatically filters stations:
 **Current Available Stations:**
 - ชัยภูมิ (Chaiyaphum): 33 stations
 - นครราชสีมา (Nakhon Ratchasima): 39 stations
+- บุรีรัมย์ (Buriram): Available stations (to be confirmed)
 
 ## Example Outputs
 

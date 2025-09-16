@@ -47,9 +47,16 @@ def language_processing_node(state: FMStationState) -> Dict[str, Any]:
         numbers = re.findall(r'\d+', user_input)
         station_count = int(numbers[0]) if numbers else 10
         time_minutes = None
+        days = None
 
-        # Look for time constraints
-        if len(numbers) >= 2:
+        # Look for day constraints first
+        if "day" in user_input.lower():
+            day_matches = re.findall(r'(\d+)\s*day', user_input.lower())
+            if day_matches:
+                days = int(day_matches[0])
+
+        # Look for time constraints (only if not day-related)
+        if len(numbers) >= 2 and not days:
             # Check for time range (e.g., "30-40 minutes")
             if "-" in user_input:
                 time_parts = re.findall(r'(\d+)-(\d+)', user_input)
@@ -66,6 +73,7 @@ def language_processing_node(state: FMStationState) -> Dict[str, Any]:
             "location": location_info,
             "station_count": station_count,
             "time_constraint_minutes": time_minutes,
+            "days": days,
             "needs_route": "route" in user_input.lower() or "plan" in user_input.lower()
         }
 
@@ -80,11 +88,12 @@ def language_processing_node(state: FMStationState) -> Dict[str, Any]:
 # Thai province coordinates (fallback data)
 THAI_PROVINCES = {
     "ชัยภูมิ": (15.8068, 102.0348),
+    "นครราชสีมา": (14.9799, 102.0977),
+    "บุรีรัมย์": (14.9930, 103.1029),
     "กรุงเทพมหานคร": (13.7563, 100.5018),
     "เชียงใหม่": (18.7883, 98.9853),
     "ภูเก็ต": (7.8804, 98.3923),
     "ขอนแก่น": (16.4322, 102.8236),
-    "นครราชสีมา": (14.9799, 102.0977),
     "อุดรธานี": (17.4138, 102.7877),
     "สงขลา": (7.1894, 100.5954),
     "ระยอง": (12.6814, 101.2816),
@@ -665,7 +674,8 @@ def detect_step_by_step_request(state: FMStationState) -> str:
     # Check for multi-day keywords first
     multi_day_keywords = [
         "2 day", "two day", "1 day", "one day",
-        "day make", "go 2 day", "go 1 day"
+        "in 2 day", "in 1 day", "for 2 day", "for 1 day",
+        "day make", "go 2 day", "go 1 day", "2day", "1day"
     ]
 
     is_multi_day = any(keyword in user_input for keyword in multi_day_keywords)
