@@ -51,7 +51,7 @@ fm_station_planner/
 ## System Configuration
 
 ### Home Base
-- **Location**: 14.785244, 102.042534
+- **Location**: [Configurable coordinates - set in multi_day_planner.py]
 - **Operating Provinces**: ชัยภูมิ (Chaiyaphum), นครราชสีมา (Nakhon Ratchasima), บุรีรัมย์ (Buriram)
 - **Daily Return Requirement**: Must be home by 17:00 or earlier
 - **Multi-day Support**: 1-day or 2-day trips
@@ -119,7 +119,7 @@ result = planner.plan_inspection(
 print(result)
 
 # Single day with GPS coordinates
-current_location = (14.938737322657747, 102.06082160579989)
+current_location = (14.xxxx, 102.xxxx)  # Your current coordinates
 result = planner.plan_inspection(
     "make plan for 5 stations in นครราชสีมา for me",
     current_location
@@ -144,29 +144,46 @@ print(result)
 The system uses Supabase with the following key fields:
 
 ```sql
--- Key columns in fm_station table
-name                TEXT,           -- Station name
-freq               DECIMAL,         -- Frequency in MHz
+-- Key columns in fm_stations table
+id                 SERIAL PRIMARY KEY,
+station_name       TEXT,           -- Station name
+name               TEXT,           -- Alternative name field
+freq               DECIMAL,        -- Frequency in MHz
+frequency          DECIMAL,        -- Alternative frequency field
 province           TEXT,           -- Province name
 district           TEXT,           -- District name
 lat                DECIMAL,        -- Latitude
+latitude           DECIMAL,        -- Alternative latitude field
 long               DECIMAL,        -- Longitude
+longitude          DECIMAL,        -- Alternative longitude field
 inspection_68      TEXT,           -- Inspection status
 submit_a_request   TEXT,           -- Submission status
-on_air             BOOLEAN         -- On-air status
+on_air             BOOLEAN,        -- On-air status
+created_at         TIMESTAMP       -- Record creation time
 ```
 
 ## Station Filtering
 
-The system automatically filters stations:
-- ❌ **Excludes**: `inspection_68 = "ตรวจแล้ว"` (Already inspected)
-- ❌ **Excludes**: `submit_a_request = "ไม่ยื่น"` (Not submitted)
-- ✅ **Includes**: `on_air = True` (Only on-air stations)
+The system automatically filters stations based on inspection status and operational criteria:
 
-**Current Available Stations:**
-- ชัยภูมิ (Chaiyaphum): 33 stations
-- นครราชสีมา (Nakhon Ratchasima): 39 stations
-- บุรีรัมย์ (Buriram): Available stations (to be confirmed)
+### **Filtering Logic:**
+- ❌ **Excludes**: `inspection_68 = "ตรวจแล้ว"` (Already inspected)
+- ❌ **Excludes**: `submit_a_request = "ไม่ยื่น"` (Not submitted for inspection)
+- ✅ **Includes**: `on_air = True` (Only operational/on-air stations)
+- ✅ **Includes**: Stations with valid GPS coordinates (`lat` and `long` fields)
+
+### **Multi-Province Support:**
+The system can handle single or multiple provinces in one request:
+- **Single Province**: "10 stations in ชัยภูมิ"
+- **Multi-Province**: "20 stations at nkr and brr"
+- **Province Codes**: cyp (ชัยภูมิ), nkr (นครราชสีมา), brr (บุรีรัมย์)
+
+### **Available Stations** (filtered count):
+- ชัยภูมิ (Chaiyaphum): Available stations vary based on inspection status
+- นครราชสีมา (Nakhon Ratchasima): Available stations vary based on inspection status
+- บุรีรัมย์ (Buriram): Available stations vary based on inspection status
+
+*Note: Station counts are dynamic and depend on current inspection status and operational state.*
 
 ## Example Outputs
 
@@ -176,7 +193,7 @@ Input: "find me 10 stations in ชัยภูมิ i want to go 2 day make a p
 
 Output:
 # Multi-Day FM Station Inspection Plan - ชัยภูมิ
-**Home Base**: 14.785244, 102.042534
+**Home Base**: [Configurable coordinates]
 
 ## Day 1 Plan (5 stations)
 1. **Station Name**: วัดเทพโพธิ์ทอง
