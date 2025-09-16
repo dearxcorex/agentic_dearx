@@ -7,8 +7,8 @@ Analyzes if the generated plan is optimal and suggests improvements
 import logging
 from typing import Dict, List, Any, Tuple, Optional
 from haversine import haversine, Unit
-from openrouter_client import OpenRouterClient
-from config import Config
+from .openrouter_client import OpenRouterClient
+from ..config.config import Config
 
 logger = logging.getLogger(__name__)
 

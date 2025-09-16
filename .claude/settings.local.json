@@ -15,7 +15,8 @@
       "Bash(git add:*)",
       "Bash(find:*)",
       "Bash(source:*)",
-      "Bash(uv pip install:*)"
+      "Bash(uv pip install:*)",
+      "Read(//Users/deardevx/Documents/my_stufF/nbtc_project/agent_ai/**)"
     ],
     "deny": [],
     "ask": []

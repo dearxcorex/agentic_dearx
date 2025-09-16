@@ -4,7 +4,7 @@ Real-time location tool for FM Station inspection planning
 
 from typing import Dict, List, Optional, Tuple, Any
 from haversine import haversine, Unit
-from database import StationDatabase
+from ..database.database import StationDatabase
 import logging
 import json
 

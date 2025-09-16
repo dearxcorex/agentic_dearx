@@ -3,7 +3,7 @@
 import logging
 from typing import Optional, Tuple
 from langgraph.graph import StateGraph, START, END
-from agents import (
+from .agents import (
     FMStationState,
     language_processing_node,
     location_processing_node,
@@ -20,7 +20,7 @@ from agents import (
     check_for_errors,
     error_response_node
 )
-from config import Config
+from ..config.config import Config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -210,7 +210,7 @@ class InteractivePlanner:
                 # Automatically detect current location
                 print("🔍 Detecting your current location...")
                 try:
-                    from auto_location import AutoLocationDetector
+                    from ..utils.auto_location import AutoLocationDetector
                     location_detector = AutoLocationDetector()
                     current_location = location_detector.get_current_location()
 

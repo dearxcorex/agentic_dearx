@@ -5,7 +5,7 @@ import json
 from typing import Dict, List, Optional, Any
 from tenacity import retry, stop_after_attempt, wait_exponential
 from cachetools import TTLCache
-from config import Config, ModelConfig
+from ..config.config import Config, ModelConfig
 import logging
 
 logging.basicConfig(level=logging.INFO)

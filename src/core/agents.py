@@ -5,10 +5,10 @@ from typing_extensions import TypedDict
 import json
 import re
 from geopy.geocoders import Nominatim
-from openrouter_client import OpenRouterClient
-from database import StationDatabase
-from location_tool import LocationTool
-from config import Config
+from ..services.openrouter_client import OpenRouterClient
+from ..database.database import StationDatabase
+from ..utils.location_tool import LocationTool
+from ..config.config import Config
 import logging
 import operator
 
@@ -389,7 +389,7 @@ def plan_evaluation_node(state: FMStationState) -> Dict[str, Any]:
         logger.info(f"Evaluating plan with {len(stations)} stations from location {current_location}")
 
         # Import and use the plan evaluator
-        from plan_evaluator import PlanEvaluationAgent
+        from ..services.plan_evaluator import PlanEvaluationAgent
 
         evaluator = PlanEvaluationAgent()
         evaluation = evaluator.evaluate_plan(stations, current_location, route_info)
@@ -641,7 +641,7 @@ def detect_location_based_request(state: FMStationState) -> str:
 def multi_day_planning_node(state: FMStationState) -> Dict[str, Any]:
     """Multi-day planning with home return requirements"""
     try:
-        from multi_day_planner import MultiDayPlanner
+        from .multi_day_planner import MultiDayPlanner
 
         user_input = state.get("user_input")
         planner = MultiDayPlanner()

@@ -2,7 +2,7 @@
 
 from typing import List, Dict, Optional, Tuple
 from supabase import create_client, Client
-from config import Config
+from ..config.config import Config
 import logging
 from haversine import haversine, Unit
 
@@ -179,7 +179,7 @@ class StationDatabase:
     def _detect_province_from_gps(self, coordinates: Tuple[float, float]) -> Optional[str]:
         """Detect Thai province from GPS coordinates"""
         try:
-            from location_province_mapper import ThaiProvinceMapper
+            from ..utils.location_province_mapper import ThaiProvinceMapper
             mapper = ThaiProvinceMapper()
             return mapper.get_province_from_coordinates(coordinates[0], coordinates[1])
         except ImportError:
@@ -189,7 +189,7 @@ class StationDatabase:
     def _get_nearby_provinces(self, coordinates: Tuple[float, float]) -> List[str]:
         """Get nearby provinces from GPS coordinates"""
         try:
-            from location_province_mapper import ThaiProvinceMapper
+            from ..utils.location_province_mapper import ThaiProvinceMapper
             mapper = ThaiProvinceMapper()
             return mapper.get_nearby_provinces(coordinates[0], coordinates[1], max_distance=1.5)
         except ImportError:
@@ -199,7 +199,7 @@ class StationDatabase:
     def _estimate_distance_to_province(self, coordinates: Tuple[float, float], province: str) -> float:
         """Estimate distance from coordinates to province center"""
         try:
-            from location_province_mapper import ThaiProvinceMapper
+            from ..utils.location_province_mapper import ThaiProvinceMapper
             mapper = ThaiProvinceMapper()
             if province in mapper.province_boundaries:
                 province_info = mapper.province_boundaries[province]

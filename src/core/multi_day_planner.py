@@ -4,9 +4,9 @@ import re
 from typing import List, Dict, Tuple, Optional
 from datetime import datetime, timedelta
 from haversine import haversine, Unit
-from database import StationDatabase
-from openrouter_client import OpenRouterClient
-from config import Config
+from ..database.database import StationDatabase
+from ..services.openrouter_client import OpenRouterClient
+from ..config.config import Config
 import logging
 
 logging.basicConfig(level=logging.INFO)
