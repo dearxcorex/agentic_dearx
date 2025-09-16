@@ -12,7 +12,10 @@
       "Bash(.venvScriptsactivate)",
       "Bash(pip install:*)",
       "Bash(.venvScriptsactivate.bat)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(find:*)",
+      "Bash(source:*)",
+      "Bash(uv pip install:*)"
     ],
     "deny": [],
     "ask": []

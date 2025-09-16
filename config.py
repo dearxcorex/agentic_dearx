@@ -21,45 +21,48 @@ class Config:
     """Application configuration"""
 
     # OpenRouter Configuration
-    OPENROUTER_API_KEY = os.getenv("QWEN_API_KEY")
+    OPENROUTER_API_KEY = os.getenv("GERMINI_FLASH")
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
     # Supabase Configuration
     SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
     SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-    # Model Selection Strategy
+    # Telegram Bot Configuration
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+    # Model Selection Strategy - Using Gemini Flash for all tasks
     MODELS = {
         "complex_reasoning": ModelConfig(
-            name="anthropic/claude-3.5-sonnet",
+            name="google/gemini-flash-1.5",
             max_tokens=4096,
             temperature=0.3,
-            cost_per_1k_input=0.003,
-            cost_per_1k_output=0.015,
+            cost_per_1k_input=0.000075,
+            cost_per_1k_output=0.0003,
             use_case="Complex route planning and optimization"
         ),
         "thai_language": ModelConfig(
-            name="openai/gpt-4o-mini",
+            name="google/gemini-flash-1.5",
             max_tokens=2048,
             temperature=0.5,
-            cost_per_1k_input=0.00015,
-            cost_per_1k_output=0.0006,
+            cost_per_1k_input=0.000075,
+            cost_per_1k_output=0.0003,
             use_case="Thai language processing and response generation"
         ),
         "simple_tasks": ModelConfig(
-            name="meta-llama/llama-3.2-3b-instruct",
+            name="google/gemini-flash-1.5",
             max_tokens=1024,
             temperature=0.3,
-            cost_per_1k_input=0.00006,
-            cost_per_1k_output=0.00025,
+            cost_per_1k_input=0.000075,
+            cost_per_1k_output=0.0003,
             use_case="Simple parsing and data extraction"
         ),
         "location_parsing": ModelConfig(
-            name="qwen/qwen-2.5-72b-instruct",
+            name="google/gemini-flash-1.5",
             max_tokens=512,
             temperature=0.2,
-            cost_per_1k_input=0.00035,
-            cost_per_1k_output=0.0014,
+            cost_per_1k_input=0.000075,
+            cost_per_1k_output=0.0003,
             use_case="Location name parsing and geocoding"
         )
     }

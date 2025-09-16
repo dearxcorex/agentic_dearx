@@ -178,23 +178,30 @@ Generate a Thai response with:
     def generate_english_response(self,
                                  stations: List[Dict],
                                  route_info: Dict,
-                                 user_requirements: str) -> str:
-        """Generate natural English language response"""
+                                 user_requirements: str,
+                                 plan_evaluation: Optional[Dict] = None) -> str:
+        """Generate natural English language response with specific format: station name, frequency, province, district"""
         system_prompt = """You are a helpful assistant for FM station inspection planning.
-        Generate clear, natural English responses with numbered station lists.
-        Include distance, travel time, and total time information.
+        Generate clear, natural English responses with the EXACT format requested.
+        For each station, include: Station Name, Frequency, Province, District.
         Be concise but informative."""
 
         prompt = f"""User requirements: {user_requirements}
 Stations found: {json.dumps(stations, ensure_ascii=False, indent=2)}
 Route information: {json.dumps(route_info, ensure_ascii=False, indent=2)}
 
-Generate an English response with:
-1. Numbered list of stations
-2. Distance from previous station
-3. Travel time between stations
-4. Total time (travel + 10 min inspection per station)
-5. Summary at the end"""
+Generate an English response with the EXACT format:
+1. Numbered list of stations with:
+   - Station Name: [name from database]
+   - Frequency: [freq from database] MHz
+   - Province: [province from database]
+   - District: [district from database]
+   - Distance: [distance_from_start or distance_km] km
+
+2. Summary with total distance and time
+
+IMPORTANT: Always include station name, frequency, province, and district for each station.
+Use 'name' for station name and 'freq' for frequency from the database."""
 
         return self.complete(
             prompt,

@@ -27,8 +27,15 @@ class FMStationState(TypedDict):
     stations_ordered: List[Dict[str, Any]]  # Stations in optimal order
     current_location: Union[Tuple[float, float], None]  # Real-time GPS coordinates
     location_based_plan: Dict[str, Any]  # Location-based inspection plan
+    plan_evaluation: Dict[str, Any]  # Plan evaluation results
     final_response: str  # Final response
     errors: Annotated[List[str], operator.add]  # Accumulated errors
+
+    # New fields for step-by-step workflow
+    step_by_step_mode: bool  # Whether using step-by-step approach
+    visited_station_ids: List[str]  # IDs of stations already planned/visited
+    current_step: int  # Current step in the process
+    nearest_station: Optional[Dict[str, Any]]  # Current nearest station
 
 def language_processing_node(state: FMStationState) -> Dict[str, Any]:
     """LangGraph node for parsing Thai user input and extracting requirements"""
@@ -153,9 +160,11 @@ def database_query_node(state: FMStationState) -> Dict[str, Any]:
             "radius_km": 50  # Default search radius
         }
 
-        # Get current location
-        current_location = None
-        if coordinates:
+        # Get current location - prioritize real GPS coordinates over processed location
+        current_location = state.get("current_location")
+
+        # If no real GPS coordinates, fall back to processed location coordinates
+        if not current_location and coordinates:
             current_location = (coordinates.get("lat"), coordinates.get("lon"))
 
         # Search stations
@@ -357,6 +366,42 @@ def _trim_route_to_fit_time(stations: List[Dict], order: List[int], start_locati
         "trimmed_order": trimmed_order
     }
 
+def plan_evaluation_node(state: FMStationState) -> Dict[str, Any]:
+    """LangGraph node for evaluating and optimizing the inspection plan"""
+    try:
+        stations = state.get("stations", [])
+        current_location = state.get("current_location")
+        route_info = state.get("route_info", {})
+
+        if not stations:
+            logger.info("No stations to evaluate")
+            return {"plan_evaluation": {"is_optimal": True, "score": 100, "suggestions": []}}
+
+        # Use start_location if no current_location
+        if not current_location:
+            start_location_dict = state.get("start_location", {})
+            if start_location_dict.get("lat") and start_location_dict.get("lon"):
+                current_location = (start_location_dict["lat"], start_location_dict["lon"])
+            else:
+                # Default to Bangkok coordinates if nothing available
+                current_location = (13.7563, 100.5018)
+
+        logger.info(f"Evaluating plan with {len(stations)} stations from location {current_location}")
+
+        # Import and use the plan evaluator
+        from plan_evaluator import PlanEvaluationAgent
+
+        evaluator = PlanEvaluationAgent()
+        evaluation = evaluator.evaluate_plan(stations, current_location, route_info)
+
+        logger.info(f"Plan evaluation completed. Score: {evaluation.get('score', 0)}/100, Optimal: {evaluation.get('is_optimal', False)}")
+
+        return {"plan_evaluation": evaluation}
+
+    except Exception as e:
+        logger.error(f"Plan evaluation error: {e}")
+        return {"plan_evaluation": {"is_optimal": True, "score": 50, "suggestions": [], "error": str(e)}}
+
 def response_generation_node(state: FMStationState) -> Dict[str, Any]:
     """LangGraph node for generating Thai language responses"""
     try:
@@ -365,6 +410,7 @@ def response_generation_node(state: FMStationState) -> Dict[str, Any]:
         stations = state.get("stations_ordered", [])
         route_info = state.get("route_info", {})
         requirements = state.get("requirements", {})
+        plan_evaluation = state.get("plan_evaluation", {})
 
         if not stations:
             response = "Sorry, no FM stations found in the specified area. Please try searching in a different area."
@@ -373,8 +419,28 @@ def response_generation_node(state: FMStationState) -> Dict[str, Any]:
             response = llm_client.generate_english_response(
                 stations,
                 route_info,
-                requirements.get("original_text", "")
+                requirements.get("original_text", ""),
+                plan_evaluation  # Include plan evaluation in response
             )
+
+            # Add plan evaluation summary
+            if plan_evaluation and plan_evaluation.get("score") is not None:
+                score = plan_evaluation.get("score", 0)
+                is_optimal = plan_evaluation.get("is_optimal", False)
+                ai_eval = plan_evaluation.get("ai_evaluation", "")
+                suggestions = plan_evaluation.get("optimization_suggestions", [])
+
+                response += f"\n\n**Route Analysis:**"
+                response += f"\n• Route Efficiency Score: {score}/100"
+                response += f"\n• Route Status: {'✅ Optimal' if is_optimal else '⚠️ Can be optimized'}"
+
+                if ai_eval:
+                    response += f"\n• Expert Analysis: {ai_eval}"
+
+                if suggestions:
+                    response += f"\n• Optimization Tips:"
+                    for suggestion in suggestions[:3]:  # Show top 3 suggestions
+                        response += f"\n  - {suggestion}"
 
             # Add cost information
             total_cost = llm_client.get_total_cost()
@@ -457,6 +523,102 @@ def location_based_planning_node(state: FMStationState) -> Dict[str, Any]:
         return {"errors": [f"Location-based planning failed: {str(e)}"]}
 
 
+def step_by_step_planning_node(state: FMStationState) -> Dict[str, Any]:
+    """Step-by-step agent: 1) Find province 2) Find nearest station 3) Continue to next nearest"""
+    try:
+        db = StationDatabase()
+        llm_client = OpenRouterClient()
+
+        current_location = state.get("current_location")
+        requirements = state.get("requirements", {})
+        station_count = requirements.get("station_count", 5)
+        visited_station_ids = state.get("visited_station_ids", [])
+
+        if not current_location:
+            return {"errors": ["Current location is required for step-by-step planning"]}
+
+        logger.info(f"Step-by-step planning: Finding {station_count} stations from {current_location}")
+
+        # Step 1: Detect province from user's location
+        detected_province = db._detect_province_from_gps(current_location)
+        if not detected_province:
+            return {"errors": ["Could not determine province from current location"]}
+
+        logger.info(f"Step 1: User is in province: {detected_province}")
+
+        # Step 2: Find stations one by one using nearest-neighbor approach
+        stations_sequence = []
+        current_pos = current_location
+
+        for step in range(station_count):
+            logger.info(f"Step {step + 2}: Finding nearest station from {current_pos}")
+
+            nearest_station = db.get_nearest_station(current_pos, visited_station_ids)
+
+            if not nearest_station:
+                logger.info(f"No more available stations found after {len(stations_sequence)} stations")
+                break
+
+            # Add to sequence
+            stations_sequence.append(nearest_station)
+            visited_station_ids.append(str(nearest_station.get('id_fm')))
+
+            # Update current position to the station we just added
+            if nearest_station.get('lat') and nearest_station.get('long'):
+                current_pos = (nearest_station['lat'], nearest_station['long'])
+
+            logger.info(f"Added station: {nearest_station.get('name')} "
+                       f"at {nearest_station.get('distance_km', 0)}km")
+
+        # Calculate total route information
+        route_info = _calculate_route_info_step_by_step(stations_sequence, current_location)
+
+        logger.info(f"Step-by-step planning completed: {len(stations_sequence)} stations, "
+                   f"Total distance: {route_info.get('total_distance_km', 0)}km")
+
+        return {
+            "stations": stations_sequence,
+            "stations_ordered": stations_sequence,
+            "route_info": route_info,
+            "visited_station_ids": visited_station_ids,
+            "step_by_step_mode": True
+        }
+
+    except Exception as e:
+        logger.error(f"Step-by-step planning error: {e}")
+        return {"errors": [f"Step-by-step planning failed: {str(e)}"]}
+
+
+def _calculate_route_info_step_by_step(stations: List[Dict], start_location: Tuple[float, float]) -> Dict:
+    """Calculate route info for step-by-step sequence"""
+    from haversine import haversine
+
+    if not stations:
+        return {"total_distance_km": 0, "total_time_minutes": 0, "stations": []}
+
+    total_distance = 0
+    total_time = 0
+    current_pos = start_location
+
+    for i, station in enumerate(stations):
+        if station.get('lat') and station.get('long'):
+            station_pos = (station['lat'], station['long'])
+            distance = haversine(current_pos, station_pos)
+            travel_time = (distance / Config.DEFAULT_SPEED_KMH) * 60
+
+            total_distance += distance
+            total_time += travel_time + Config.DEFAULT_INSPECTION_TIME_MINUTES
+
+            current_pos = station_pos
+
+    return {
+        "total_distance_km": round(total_distance, 2),
+        "total_time_minutes": round(total_time, 1),
+        "stations": len(stations),
+        "approach": "step_by_step_nearest_neighbor"
+    }
+
+
 def detect_location_based_request(state: FMStationState) -> str:
     """Conditional edge to detect if this is a location-based request"""
     user_input = state.get("user_input", "").lower()
@@ -472,6 +634,55 @@ def detect_location_based_request(state: FMStationState) -> str:
 
     if is_location_request and current_location:
         return "location_based"
+    else:
+        return "standard"
+
+
+def multi_day_planning_node(state: FMStationState) -> Dict[str, Any]:
+    """Multi-day planning with home return requirements"""
+    try:
+        from multi_day_planner import MultiDayPlanner
+
+        user_input = state.get("user_input")
+        planner = MultiDayPlanner()
+
+        result = planner.plan_multi_day_inspection(user_input)
+
+        return {
+            "final_response": result
+        }
+
+    except Exception as e:
+        logger.error(f"Multi-day planning error: {e}")
+        return {"errors": [f"Multi-day planning failed: {str(e)}"]}
+
+
+def detect_step_by_step_request(state: FMStationState) -> str:
+    """Conditional edge to detect request type"""
+    user_input = state.get("user_input", "").lower()
+    current_location = state.get("current_location")
+
+    # Check for multi-day keywords first
+    multi_day_keywords = [
+        "2 day", "two day", "1 day", "one day",
+        "day make", "go 2 day", "go 1 day"
+    ]
+
+    is_multi_day = any(keyword in user_input for keyword in multi_day_keywords)
+
+    if is_multi_day:
+        return "multi_day"
+
+    # Keywords that suggest step-by-step approach
+    step_by_step_keywords = [
+        "step by step", "one by one", "nearest", "closest",
+        "make plan", "plan for", "station for me"
+    ]
+
+    is_step_by_step = any(keyword in user_input for keyword in step_by_step_keywords)
+
+    if is_step_by_step and current_location:
+        return "step_by_step"
     else:
         return "standard"
 

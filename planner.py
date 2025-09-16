@@ -1,8 +1,7 @@
 """Main FM Station Inspection Planner using LangGraph"""
 
-import json
 import logging
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 from langgraph.graph import StateGraph, START, END
 from agents import (
     FMStationState,
@@ -10,14 +9,17 @@ from agents import (
     location_processing_node,
     database_query_node,
     route_planning_node,
+    plan_evaluation_node,
     response_generation_node,
     location_based_planning_node,
+    step_by_step_planning_node,
+    multi_day_planning_node,
     detect_location_based_request,
+    detect_step_by_step_request,
     should_continue_after_stations,
     check_for_errors,
     error_response_node
 )
-from route_optimizer import RouteOptimizer
 from config import Config
 
 logging.basicConfig(level=logging.INFO)
@@ -32,9 +34,6 @@ class FMStationPlanner:
         # Build the LangGraph workflow
         self.workflow = self._build_workflow()
 
-        # Create route optimizer for fallback scenarios
-        self.route_optimizer = RouteOptimizer(speed_kmh=Config.DEFAULT_SPEED_KMH)
-
         logger.info("FM Station Planner initialized with LangGraph workflow")
 
     def _build_workflow(self) -> StateGraph:
@@ -48,19 +47,23 @@ class FMStationPlanner:
         workflow.add_node("location_processing", location_processing_node)
         workflow.add_node("database_query", database_query_node)
         workflow.add_node("route_planning", route_planning_node)
+        workflow.add_node("plan_evaluation", plan_evaluation_node)
         workflow.add_node("response_generation", response_generation_node)
         workflow.add_node("location_based_planning", location_based_planning_node)
+        workflow.add_node("step_by_step_planning", step_by_step_planning_node)
+        workflow.add_node("multi_day_planning", multi_day_planning_node)
         workflow.add_node("error_response", error_response_node)
 
         # Add edges
         workflow.add_edge(START, "language_processing")
 
-        # Conditional edge after language processing to detect location-based requests
+        # Conditional edge after language processing to detect request type
         workflow.add_conditional_edges(
             "language_processing",
-            detect_location_based_request,
+            detect_step_by_step_request,
             {
-                "location_based": "location_based_planning",
+                "multi_day": "multi_day_planning",
+                "step_by_step": "step_by_step_planning",
                 "standard": "location_processing"
             }
         )
@@ -78,12 +81,19 @@ class FMStationPlanner:
             }
         )
 
-        # From route planning to response
-        workflow.add_edge("route_planning", "response_generation")
+        # From route planning to plan evaluation
+        workflow.add_edge("route_planning", "plan_evaluation")
+
+        # From step-by-step planning to plan evaluation
+        workflow.add_edge("step_by_step_planning", "plan_evaluation")
+
+        # From plan evaluation to response generation
+        workflow.add_edge("plan_evaluation", "response_generation")
 
         # All response paths end the workflow
         workflow.add_edge("response_generation", END)
         workflow.add_edge("location_based_planning", END)
+        workflow.add_edge("multi_day_planning", END)
         workflow.add_edge("error_response", END)
 
         # Compile the workflow
@@ -117,8 +127,14 @@ class FMStationPlanner:
                 "stations_ordered": [],
                 "current_location": current_location,
                 "location_based_plan": {},
+                "plan_evaluation": {},
                 "final_response": "",
-                "errors": []
+                "errors": [],
+                # New step-by-step fields
+                "step_by_step_mode": False,
+                "visited_station_ids": [],
+                "current_step": 0,
+                "nearest_station": None
             }
 
             # Override start location if provided
@@ -138,6 +154,21 @@ class FMStationPlanner:
         except Exception as e:
             logger.error(f"Error in LangGraph planning: {e}", exc_info=True)
             return f"Sorry, an error occurred during planning: {str(e)}"
+
+    def plan_inspection_with_location(self,
+                                    user_input: str,
+                                    start_location: Tuple[float, float]) -> str:
+        """
+        Plan inspection with explicit start location (for mobile/Telegram bot)
+
+        Args:
+            user_input: User request text
+            start_location: GPS coordinates (lat, lon)
+
+        Returns:
+            Thai language response with inspection plan
+        """
+        return self.plan_inspection(user_input, start_location)
 
     def get_workflow_visualization(self) -> bytes:
         """Get a visual representation of the LangGraph workflow"""
@@ -176,17 +207,31 @@ class InteractivePlanner:
                     print("Please specify your requirements")
                     continue
 
-                # Optional: Get current location
-                use_current = input("Use current location? (y/n): ").strip().lower()
-                current_location = None
+                # Automatically detect current location
+                print("🔍 Detecting your current location...")
+                try:
+                    from auto_location import AutoLocationDetector
+                    location_detector = AutoLocationDetector()
+                    current_location = location_detector.get_current_location()
 
-                if use_current == 'y':
-                    try:
-                        lat = float(input("Latitude: "))
-                        lon = float(input("Longitude: "))
-                        current_location = (lat, lon)
-                    except ValueError:
-                        print("Invalid coordinates, will use location from text instead")
+                    if current_location:
+                        location_info = location_detector.get_location_info()
+                        print(f"✅ {location_info}")
+
+                        # Ask user if they want to use detected location
+                        use_detected = input("Use detected location? (y/n): ").strip().lower()
+                        if use_detected != 'y':
+                            current_location = None
+                            print("📍 Will use location from your text request instead")
+                    else:
+                        current_location = None
+                        print("❌ Unable to detect location automatically")
+                        print("📍 Will use location from your text request instead")
+
+                except ImportError:
+                    current_location = None
+                    print("❌ Automatic location detection not available")
+                    print("📍 Please include location in your text request")
 
                 # Process request
                 print("\nProcessing...")

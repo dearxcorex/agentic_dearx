@@ -16,12 +16,21 @@ class LocationTool:
     def __init__(self):
         self.db = StationDatabase()
 
-    def get_current_location(self) -> Optional[Dict[str, float]]:
+    def get_current_location(self, lat: Optional[float] = None, lon: Optional[float] = None) -> Optional[Dict[str, float]]:
         """
         Get current GPS location
-        In a real implementation, this would use device GPS
-        For now, returns None to prompt user input
+
+        Args:
+            lat: Latitude from external source (e.g., Telegram bot)
+            lon: Longitude from external source (e.g., Telegram bot)
+
+        Returns:
+            Dictionary with lat/lon or None if not available
         """
+        if lat is not None and lon is not None:
+            return {"latitude": lat, "longitude": lon}
+
+        # For mobile/bot integration, location will be provided externally
         return None
 
     def calculate_distance(self,
