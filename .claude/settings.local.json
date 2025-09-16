@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:doc.agentscope.io)",
+      "WebSearch",
+      "WebFetch(domain:pypi.org)",
+      "Bash(python -m pip install:*)",
+      "Bash(python test_agentscope.py:*)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__get-library-docs",
+      "Bash(python:*)",
+      "Bash(.venvScriptsactivate)",
+      "Bash(pip install:*)",
+      "Bash(.venvScriptsactivate.bat)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
