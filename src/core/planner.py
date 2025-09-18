@@ -21,6 +21,7 @@ from .agents import (
     error_response_node
 )
 from ..config.config import Config
+from ..services.location_choice_service import LocationChoiceService
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -183,6 +184,7 @@ class InteractivePlanner:
 
     def __init__(self):
         self.planner = FMStationPlanner()
+        self.location_service = LocationChoiceService()
 
     def run(self):
         """Run interactive planning session"""
@@ -207,31 +209,44 @@ class InteractivePlanner:
                     print("Please specify your requirements")
                     continue
 
-                # Automatically detect current location
-                print("🔍 Detecting your current location...")
-                try:
-                    from ..utils.auto_location import AutoLocationDetector
-                    location_detector = AutoLocationDetector()
-                    current_location = location_detector.get_current_location()
+                # Ask for location choice if this is a planning request
+                current_location = None
+                if self.location_service.should_ask_location_choice(user_input):
+                    print("\n" + self.location_service.get_location_choice_prompt())
 
-                    if current_location:
-                        location_info = location_detector.get_location_info()
-                        print(f"✅ {location_info}")
+                    # Get location choice
+                    while current_location is None:
+                        choice_input = input("\n📍 Your choice (1 or 2): ").strip()
 
-                        # Ask user if they want to use detected location
-                        use_detected = input("Use detected location? (y/n): ").strip().lower()
-                        if use_detected != 'y':
-                            current_location = None
-                            print("📍 Will use location from your text request instead")
-                    else:
-                        current_location = None
-                        print("❌ Unable to detect location automatically")
-                        print("📍 Will use location from your text request instead")
+                        if choice_input.lower() in ['exit', 'quit']:
+                            print("\n👋 Thank you for using the service!")
+                            return
 
-                except ImportError:
-                    current_location = None
-                    print("❌ Automatic location detection not available")
-                    print("📍 Please include location in your text request")
+                        choice = self.location_service.parse_location_choice(choice_input)
+
+                        if choice['type'] == 'request_location':
+                            print("\n📱 For console mode, I'll use NBTC23 base location instead.")
+                            print("(In a real bot, you would share your GPS location)")
+                            # Automatically use NBTC23 base for console mode
+                            choice = self.location_service.parse_location_choice("2")
+
+                        if choice['type'] in ['user_location', 'nbtc23_base']:
+                            current_location = choice['coordinates']
+                            print(f"\n✅ Location set: {choice['name']}")
+                            break
+                        else:
+                            print(f"\n❓ {choice['description']}")
+                else:
+                    # Try to detect location automatically if available
+                    try:
+                        from ..utils.auto_location import AutoLocationDetector
+                        location_detector = AutoLocationDetector()
+                        current_location = location_detector.get_current_location()
+                        if current_location:
+                            location_info = location_detector.get_location_info()
+                            print(f"✅ Auto-detected: {location_info}")
+                    except ImportError:
+                        pass
 
                 # Process request
                 print("\nProcessing...")

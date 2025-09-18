@@ -5,6 +5,7 @@ Real-time location tool for FM Station inspection planning
 from typing import Dict, List, Optional, Tuple, Any
 from haversine import haversine, Unit
 from ..database.database import StationDatabase
+from ..services.travel_time_service import TravelTimeService
 import logging
 import json
 
@@ -15,6 +16,7 @@ class LocationTool:
 
     def __init__(self):
         self.db = StationDatabase()
+        self.travel_service = TravelTimeService()
 
     def get_current_location(self, lat: Optional[float] = None, lon: Optional[float] = None) -> Optional[Dict[str, float]]:
         """
@@ -171,18 +173,37 @@ class LocationTool:
                     total_distance += segment_distance
                     prev_location = station_coords
 
-            # Estimate time (40 km/h average speed + 10 min inspection per station)
-            travel_time_hours = total_distance / 40
-            inspection_time_hours = len(stations_in_range) * (10 / 60)  # 10 min per station
-            total_time_hours = travel_time_hours + inspection_time_hours
+            # Calculate accurate travel time using routing service
+            total_travel_minutes = 0
+            prev_location = current_location
+
+            for station in stations_in_range:
+                if station.get("latitude") and station.get("longitude"):
+                    station_coords = (station["latitude"], station["longitude"])
+                    travel_info = self.travel_service.get_travel_time(prev_location, station_coords)
+                    station["travel_time_minutes"] = travel_info["duration_minutes"]
+                    station["travel_distance_km"] = travel_info["distance_km"]
+                    total_travel_minutes += travel_info["duration_minutes"]
+                    prev_location = station_coords
+                else:
+                    station["travel_time_minutes"] = 30  # Default fallback
+                    station["travel_distance_km"] = station.get("distance_km", 20)
+                    total_travel_minutes += 30
+
+            # Add inspection time (10 min per station)
+            inspection_time_minutes = len(stations_in_range) * 10
+            total_time_minutes = total_travel_minutes + inspection_time_minutes
+            total_time_hours = total_time_minutes / 60
 
             return {
                 "success": True,
                 "message": f"Found {len(stations_in_range)} uninspected stations",
                 "stations": stations_in_range,
                 "total_distance_km": round(total_distance, 2),
+                "total_travel_time_minutes": round(total_travel_minutes, 1),
+                "total_inspection_time_minutes": inspection_time_minutes,
                 "estimated_time_hours": round(total_time_hours, 2),
-                "estimated_time_minutes": round(total_time_hours * 60, 0),
+                "estimated_time_minutes": round(total_time_minutes, 0),
                 "current_location": {
                     "lat": current_location[0],
                     "lon": current_location[1]
@@ -216,11 +237,15 @@ class LocationTool:
             response += f"   - Frequency: {station.get('frequency', 'N/A')} MHz\n"
             response += f"   - Location: {station.get('district', 'N/A')}, {station.get('province', 'N/A')}\n"
             response += f"   - Distance: {station.get('distance_km', 'N/A')} km from current location\n"
+            if station.get('travel_time_minutes'):
+                response += f"   - **Travel Time**: {station.get('travel_time_minutes')} minutes\n"
             response += f"   - Status: Not yet inspected\n\n"
 
         response += f"**Summary:**\n"
         response += f"- Total Distance: {plan.get('total_distance_km', 0)} km\n"
-        response += f"- Estimated Time: {plan.get('estimated_time_hours', 0)} hours "
+        response += f"- **Travel Time**: {plan.get('total_travel_time_minutes', 0)} minutes\n"
+        response += f"- Inspection Time: {plan.get('total_inspection_time_minutes', 0)} minutes\n"
+        response += f"- **Total Time**: {plan.get('estimated_time_hours', 0)} hours "
         response += f"({plan.get('estimated_time_minutes', 0)} minutes)\n"
         response += f"- Stations to inspect: {len(stations)}\n"
 

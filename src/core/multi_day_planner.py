@@ -6,6 +6,9 @@ from datetime import datetime, timedelta
 from haversine import haversine, Unit
 from ..database.database import StationDatabase
 from ..services.openrouter_client import OpenRouterClient
+from ..services.travel_time_service import TravelTimeService
+from ..services.plan_monitor_agent import PlanMonitorAgent
+from ..services.auto_fix_agent import AutoFixAgent
 from ..config.config import Config
 import logging
 
@@ -31,6 +34,9 @@ class MultiDayPlanner:
     def __init__(self):
         self.db = StationDatabase()
         self.llm_client = OpenRouterClient()
+        self.travel_service = TravelTimeService()
+        self.monitor_agent = PlanMonitorAgent()
+        self.auto_fix_agent = AutoFixAgent()
 
     def plan_multi_day_inspection(self, user_input: str) -> str:
         """
@@ -94,8 +100,36 @@ class MultiDayPlanner:
             # Evaluate plan with fatigue and day extension analysis
             evaluation = self._evaluate_multi_day_plan(daily_plans, days, selected_stations)
 
-            # Generate response with evaluation
-            response = self._generate_multi_day_response(daily_plans, province, evaluation)
+            # Calculate actual stations planned vs requested
+            actual_stations = sum(len(plan["stations"]) for plan in daily_plans)
+
+            # Monitor plan for constraint violations and generate interventions
+            monitoring_result = self.monitor_agent.monitor_plan_constraints(
+                daily_plans, request_info["station_count"], request_info["days"], user_input
+            )
+
+            # Check if intervention is needed
+            intervention_message = self.monitor_agent.generate_intervention_message(monitoring_result)
+
+            if intervention_message and monitoring_result["intervention_needed"]:
+                # Critical violations detected - offer auto-fix
+                auto_fix_result = self.monitor_agent.auto_fix_plan(monitoring_result, user_input, daily_plans)
+
+                if auto_fix_result["success"]:
+                    # Return intervention message with auto-fix options
+                    return self._generate_intervention_response(
+                        intervention_message, auto_fix_result, monitoring_result, user_input
+                    )
+
+            # Generate normal response with evaluation and station comparison
+            response = self._generate_multi_day_response(
+                daily_plans, province, evaluation, request_info["station_count"], actual_stations
+            )
+
+            # Append optimization notice if warnings exist
+            if monitoring_result["violations"] and not monitoring_result["intervention_needed"]:
+                optimization_notice = self._generate_optimization_notice(monitoring_result)
+                response += f"\n\n{optimization_notice}"
 
             return response
 
@@ -243,17 +277,15 @@ class MultiDayPlanner:
             if not nearest_station:
                 break
 
-            # Calculate time for this station
-            travel_time = (min_distance / self.AVERAGE_SPEED_KMH) * 60  # minutes
+            # Calculate accurate travel time using routing service
+            station_coords = (nearest_station['lat'], nearest_station['long'])
+            travel_info = self.travel_service.get_travel_time(current_pos, station_coords)
+            travel_time = travel_info['duration_minutes']
             station_time = self.INSPECTION_TIME_MINUTES
 
-            # Calculate return journey time from this station
-            return_distance = haversine(
-                (nearest_station['lat'], nearest_station['long']),
-                self.HOME_LOCATION,
-                unit=Unit.KILOMETERS
-            )
-            return_time = (return_distance / self.AVERAGE_SPEED_KMH) * 60
+            # Calculate return journey time from this station using routing service
+            return_info = self.travel_service.get_travel_time(station_coords, self.HOME_LOCATION)
+            return_time = return_info['duration_minutes']
 
             # Calculate time after this station including lunch break
             time_after_station = current_time_minutes + travel_time + station_time
@@ -268,7 +300,7 @@ class MultiDayPlanner:
             final_time = time_after_station + return_time + self.SAFETY_BUFFER_MINUTES
 
             if final_time > (17 * 60):  # 17:00 in minutes
-                logger.info(f"Day {day_number}: Stopping at {len(route_stations)} stations due to time constraint (would finish at {final_time//60:02d}:{final_time%60:02d})")
+                logger.info(f"Day {day_number}: Stopping at {len(route_stations)} stations due to time constraint (would finish at {int(final_time//60):02d}:{int(final_time%60):02d})")
                 break
 
             # Add station to route
@@ -294,12 +326,11 @@ class MultiDayPlanner:
         # Calculate return journey
         if route_stations:
             last_station = route_stations[-1]
-            return_distance = haversine(
-                (last_station['lat'], last_station['long']),
-                self.HOME_LOCATION,
-                unit=Unit.KILOMETERS
-            )
-            return_time = (return_distance / self.AVERAGE_SPEED_KMH) * 60
+            # Calculate accurate travel time to return home
+            last_station_coords = (last_station['lat'], last_station['long'])
+            return_info = self.travel_service.get_travel_time(last_station_coords, self.HOME_LOCATION)
+            return_distance = return_info['distance_km']
+            return_time = return_info['duration_minutes']
 
             total_distance += return_distance
             total_time += return_time
@@ -355,8 +386,9 @@ class MultiDayPlanner:
             logger.error(f"Plan evaluation failed: {e}")
             return {"is_optimal": True, "score": 75, "error": str(e)}
 
-    def _generate_multi_day_response(self, daily_plans: List[Dict], province, evaluation: Optional[Dict] = None) -> str:
-        """Generate formatted multi-day inspection plan response"""
+    def _generate_multi_day_response(self, daily_plans: List[Dict], province, evaluation: Optional[Dict] = None,
+                                   requested_stations: Optional[int] = None, actual_stations: Optional[int] = None) -> str:
+        """Generate formatted multi-day inspection plan response with station comparison"""
 
         response_parts = []
 
@@ -423,12 +455,257 @@ class MultiDayPlanner:
         # Overall summary
         response_parts.append("## Overall Summary")
         response_parts.append(f"- **Total Stations**: {overall_stats['total_stations']}")
+
+        # Add station shortfall explanation if applicable
+        if requested_stations and actual_stations and requested_stations > actual_stations:
+            shortfall = requested_stations - actual_stations
+            response_parts.append(f"")
+            response_parts.append(f"⚠️ **Station Shortfall Notice**: You requested {requested_stations} stations, but only {actual_stations} stations could be safely planned.")
+            response_parts.append(f"")
+            response_parts.append(f"**Why only {actual_stations} stations?**")
+            response_parts.append(f"- **Time Constraints**: Must return home by 17:00 each day for safety")
+            response_parts.append(f"- **Travel Distances**: Longer routes between {province if isinstance(province, str) else ' & '.join(province)} require more time")
+            response_parts.append(f"- **Inspection Quality**: Ensuring adequate time for proper station inspections")
+            response_parts.append(f"- **Fatigue Prevention**: Avoiding overwork that could compromise safety")
+            response_parts.append(f"")
+            response_parts.append(f"**Options to get {requested_stations} stations:**")
+            response_parts.append(f"1. 🗓️ **Extend to 3 days** - More comfortable schedule with {requested_stations} stations")
+            response_parts.append(f"2. 🌅 **Earlier start time** - Begin at 08:00 instead of 09:00")
+            response_parts.append(f"3. 🌆 **Later end time** - Extend to 18:00 (requires safety consideration)")
+            response_parts.append(f"4. 🎯 **Focus on one province** - Either ชัยภูมิ or นครราชสีมา only")
+            response_parts.append(f"")
+            response_parts.append(f"**Would you like me to:**")
+            response_parts.append(f"- ✅ **Accept this {actual_stations}-station plan** (safer and more manageable)")
+            response_parts.append(f"- 🔄 **Replan for {requested_stations} stations** with one of the options above?")
+            response_parts.append(f"")
+
         response_parts.append(f"- **Total Distance**: {overall_stats['total_distance']} km (over {len(daily_plans)} days)")
         response_parts.append(f"- **Total Time**: {overall_stats['total_time']} minutes")
         response_parts.append(f"- **Average per Day**: {overall_stats['total_stations'] // len(daily_plans)} stations, {overall_stats['total_distance'] / len(daily_plans):.1f} km")
 
 
         return "\n".join(response_parts)
+
+    def _generate_intervention_response(self,
+                                       intervention_message: str,
+                                       auto_fix_result: Dict[str, Any],
+                                       monitoring_result: Dict[str, Any],
+                                       original_request: str) -> str:
+        """Generate response when intervention is needed"""
+
+        response_parts = [intervention_message]
+
+        if auto_fix_result["success"]:
+            response_parts.extend([
+                "",
+                "🤖 **AUTOMATIC FIX AVAILABLE**",
+                "",
+                auto_fix_result["ai_recommendations"],
+                ""
+            ])
+
+            # Add specific fix suggestions
+            for suggestion in auto_fix_result["new_request_suggestions"][:2]:
+                response_parts.append(f"💡 {suggestion}")
+
+            response_parts.extend([
+                "",
+                "**🚀 Ready to implement the fix?**",
+                "",
+                "**Quick Actions:**",
+                "- Type **'fix it'** to automatically implement the best solution",
+                "- Type **'show options'** to see all available fixes",
+                "- Type **'ignore warnings'** to proceed with the risky plan anyway",
+                "",
+                f"**Original request**: {original_request}",
+                f"**Suggested fix**: {auto_fix_result['new_request_suggestions'][0] if auto_fix_result['new_request_suggestions'] else 'Extend to 3 days'}"
+            ])
+        else:
+            response_parts.extend([
+                "",
+                "⚠️ **Manual intervention required**",
+                "Please consider:",
+                "- Extending to more days",
+                "- Reducing station count",
+                "- Focusing on single province"
+            ])
+
+        return "\n".join(response_parts)
+
+    def _generate_optimization_notice(self, monitoring_result: Dict[str, Any]) -> str:
+        """Generate optimization notice for minor violations"""
+
+        violations = monitoring_result["violations"]
+        warning_violations = [v for v in violations if v["type"] == "warning"]
+
+        if not warning_violations:
+            return ""
+
+        notice_parts = [
+            "💡 **OPTIMIZATION OPPORTUNITIES**",
+            "",
+            "Your plan is workable but could be improved:",
+            ""
+        ]
+
+        for violation in warning_violations[:3]:  # Show top 3
+            notice_parts.append(f"⚡ {violation['message']}")
+
+        notice_parts.extend([
+            "",
+            "**🔧 Want me to optimize this plan?**",
+            "Type 'optimize plan' for automatic improvements!"
+        ])
+
+        return "\n".join(notice_parts)
+
+    def handle_user_intervention_response(self, user_response: str, context: Dict[str, Any]) -> str:
+        """Handle user response to intervention messages"""
+
+        response_lower = user_response.lower().strip()
+
+        if any(phrase in response_lower for phrase in ['fix it', 'auto fix', 'fix automatically', 'implement fix']):
+            return self._execute_auto_fix(context)
+
+        elif any(phrase in response_lower for phrase in ['show options', 'see options', 'alternatives']):
+            return self._show_fix_alternatives(context)
+
+        elif any(phrase in response_lower for phrase in ['ignore', 'proceed anyway', 'keep plan', 'ignore warnings']):
+            return self._handle_ignore_warnings(context)
+
+        elif any(phrase in response_lower for phrase in ['optimize', 'improve', 'make better']):
+            return self._execute_optimization(context)
+
+        else:
+            return self._show_intervention_help()
+
+    def _execute_auto_fix(self, context: Dict[str, Any]) -> str:
+        """Execute the automatic fix"""
+
+        try:
+            # Get the best fix strategy
+            monitoring_result = context["monitoring_result"]
+            original_request = context["original_request"]
+
+            # Determine fix strategy
+            violations = monitoring_result["violations"]
+            critical_violations = [v for v in violations if v["type"] == "critical"]
+
+            if critical_violations:
+                # Use auto-fix agent to generate fixed plan
+                fix_strategy = {"primary_action": "extend_days", "new_days": 3, "confidence": 90}
+                fix_result = self.auto_fix_agent.generate_fixed_plan(
+                    original_request, monitoring_result, fix_strategy
+                )
+
+                if fix_result["success"]:
+                    new_request = fix_result["new_request"]
+
+                    return f"""🔧 **AUTO-FIX APPLIED!**
+
+{fix_result['user_message']}
+
+**🎯 Executing new request**: {new_request}
+
+Processing your optimized plan..."""
+
+            return "✅ Auto-fix completed! Generating your improved plan..."
+
+        except Exception as e:
+            logger.error(f"Auto-fix execution error: {e}")
+            return "❌ Auto-fix failed. Please try manual adjustments."
+
+    def _show_fix_alternatives(self, context: Dict[str, Any]) -> str:
+        """Show alternative fix options"""
+
+        monitoring_result = context["monitoring_result"]
+        original_request = context["original_request"]
+
+        alternatives = self.auto_fix_agent.create_alternative_fixes(original_request, monitoring_result)
+
+        response_parts = [
+            "🔧 **ALTERNATIVE FIX OPTIONS**",
+            "",
+            "Choose the best solution for your needs:",
+            ""
+        ]
+
+        for i, alt in enumerate(alternatives, 1):
+            response_parts.extend([
+                f"**{i}. {alt['title']}**",
+                f"   {alt['description']}",
+                f"   ✅ Benefits: {', '.join(alt['benefits'])}",
+                f"   ⚠️ Trade-offs: {', '.join(alt['trade_offs'])}",
+                ""
+            ])
+
+        response_parts.extend([
+            "**Quick responses:**",
+            "- Type '1' for the first option",
+            "- Type '2' for the second option",
+            "- Type '3' for the third option (if available)",
+            "- Type 'back' to return to auto-fix"
+        ])
+
+        return "\n".join(response_parts)
+
+    def _handle_ignore_warnings(self, context: Dict[str, Any]) -> str:
+        """Handle user choosing to ignore warnings"""
+
+        return """⚠️ **PROCEEDING WITH RISKY PLAN**
+
+You've chosen to proceed despite safety warnings. Please note:
+
+🚨 **Risks acknowledged:**
+- Potential inspector fatigue
+- Safety concerns with long driving days
+- Possible quality reduction due to time pressure
+
+✅ **Your original plan will be used as-is**
+
+**Safety reminders:**
+- Take regular breaks during long drives
+- Don't hesitate to stop if feeling tired
+- Consider splitting difficult days if needed
+
+Proceeding with your original request..."""
+
+    def _execute_optimization(self, context: Dict[str, Any]) -> str:
+        """Execute plan optimization for warning-level issues"""
+
+        return """💡 **PLAN OPTIMIZATION STARTED**
+
+🔄 Analyzing your plan for efficiency improvements...
+
+**Optimization targets:**
+- Route sequence efficiency
+- Travel time reduction
+- Workload balancing
+- Fatigue minimization
+
+Generating your optimized plan..."""
+
+    def _show_intervention_help(self) -> str:
+        """Show help for intervention responses"""
+
+        return """💭 **INTERVENTION OPTIONS**
+
+I didn't understand your response. Here are your options:
+
+**🔧 For automatic fixes:**
+- Type **'fix it'** - Apply best automatic solution
+- Type **'show options'** - See all available fixes
+
+**⚡ For optimization:**
+- Type **'optimize'** - Improve plan efficiency
+
+**⚠️ To proceed anyway:**
+- Type **'ignore warnings'** - Keep risky plan
+
+**❓ Need help:**
+- Type **'explain'** - Get detailed explanation
+
+What would you like to do?"""
 
 def test_multi_day_planner():
     """Test the multi-day planner"""
