@@ -7,6 +7,7 @@ from haversine import haversine, Unit
 from ..database.database import StationDatabase
 from ..services.openrouter_client import OpenRouterClient
 from ..services.travel_time_service import TravelTimeService
+from ..services.district_worth_agent import DistrictWorthAgent
 from ..services.plan_monitor_agent import PlanMonitorAgent
 from ..services.auto_fix_agent import AutoFixAgent
 from ..config.config import Config
@@ -35,8 +36,114 @@ class MultiDayPlanner:
         self.db = StationDatabase()
         self.llm_client = OpenRouterClient()
         self.travel_service = TravelTimeService()
+        self.district_worth_agent = DistrictWorthAgent()
         self.monitor_agent = PlanMonitorAgent()
         self.auto_fix_agent = AutoFixAgent()
+
+    def plan_with_district_optimization(self, user_input: str) -> str:
+        """
+        Plan multi-day inspection using district-worth optimization to minimize API calls
+        """
+        try:
+            # Parse user request
+            requirements = self._parse_user_request(user_input)
+            province = requirements.get('province', [])
+            if isinstance(province, str):
+                province = [province]
+
+            logger.info(f"Planning district-optimized inspection for: {province}")
+
+            # Get stations using custom filters
+            all_stations = []
+            for prov in province:
+                stations = self.db.get_stations_with_custom_filters(prov)
+                all_stations.extend(stations)
+
+            if not all_stations:
+                return "❌ No valid stations found with the specified criteria."
+
+            logger.info(f"Found {len(all_stations)} valid stations across {len(province)} provinces")
+
+            # Analyze district worth
+            district_analyses = self.district_worth_agent.analyze_all_districts(all_stations)
+            worth_districts = [d for d in district_analyses if d["should_visit"]]
+
+            if not worth_districts:
+                return "❌ No districts found with sufficient station density to be worth visiting."
+
+            # Pre-compute district-to-district distances
+            district_centers = {}
+            for analysis in worth_districts:
+                if analysis["coordinates"]:
+                    # Calculate center of district
+                    coords = analysis["coordinates"]
+                    center_lat = sum(c[0] for c in coords) / len(coords)
+                    center_lon = sum(c[1] for c in coords) / len(coords)
+                    district_centers[analysis["district"]] = (center_lat, center_lon)
+
+            # Pre-compute distances (minimal API calls)
+            logger.info("Pre-computing district distances to populate cache...")
+            self.travel_service.batch_precompute_district_distances(district_centers, self.HOME_LOCATION)
+
+            # Generate optimized plans by district
+            daily_plans = self._plan_by_districts(worth_districts, all_stations, requirements)
+
+            # Generate response
+            return self._generate_district_optimized_response(daily_plans, worth_districts, all_stations)
+
+        except Exception as e:
+            logger.error(f"District optimization planning error: {e}")
+            return f"❌ Error in district-optimized planning: {str(e)}"
+
+    def _generate_district_optimized_response(self, daily_plans: List[Dict],
+                                            worth_districts: List[Dict],
+                                            all_stations: List[Dict]) -> str:
+        """Generate response for district-optimized planning"""
+        if not daily_plans:
+            return "❌ No valid daily plans could be generated"
+
+        total_stations = sum(len(plan["stations"]) for plan in daily_plans)
+        total_days = len(daily_plans)
+
+        response = f"🎯 **District-Optimized {total_days}-Day Plan** ({total_stations} stations)\n\n"
+
+        # Add district worth summary
+        response += "📊 **District Analysis**:\n"
+        for district in worth_districts[:5]:  # Top 5 districts
+            response += f"• {district['district']}: {district['station_count']} stations (score: {district['worth_score']})\n"
+        response += "\n"
+
+        # Add daily plans
+        for day_num, plan in enumerate(daily_plans, 1):
+            stations = plan["stations"]
+            districts = plan["districts"]
+            travel_info = plan["travel_info"]
+
+            response += f"## 📅 Day {day_num} - {len(stations)} stations\n"
+            response += f"**Districts**: {', '.join(districts)}\n"
+            response += f"**Travel**: {travel_info['total_distance']:.1f}km, {travel_info['total_time']:.1f} hours\n\n"
+
+            for i, station in enumerate(stations, 1):
+                district = station.get('district', 'Unknown')
+                name = station.get('name', 'Unknown Station')
+                response += f"{i}. **{name}** ({district})\n"
+
+                if i < len(stations):
+                    next_station = stations[i]
+                    if station.get('district') == next_station.get('district'):
+                        response += f"   ↳ Same district (minimal travel)\n"
+                    else:
+                        response += f"   ↳ To {next_station.get('district', 'Unknown')}\n"
+
+            response += "\n"
+
+        # Add optimization summary
+        response += "⚡ **Optimization Benefits**:\n"
+        response += "• Grouped stations by district to minimize travel\n"
+        response += "• Reduced API calls for same-district routing\n"
+        response += "• Prioritized high-value districts\n"
+
+        return response
 
     def plan_multi_day_inspection(self, user_input: str) -> str:
         """
@@ -261,31 +368,57 @@ class MultiDayPlanner:
         current_time_minutes = 9 * 60  # 9:00 AM in minutes
 
         while remaining_stations:
-            # Find nearest station
+            # Find nearest station with same-district optimization
             nearest_station = None
             min_distance = float('inf')
+            current_district = route_stations[-1].get('district') if route_stations else None
 
-            for station in remaining_stations:
-                if station.get('lat') and station.get('long'):
-                    station_pos = (station['lat'], station['long'])
-                    distance = haversine(current_pos, station_pos, unit=Unit.KILOMETERS)
+            # Check if there are stations in the same district first
+            same_district_stations = [s for s in remaining_stations if s.get('district') == current_district and current_district != "Unknown"] if current_district else []
 
-                    if distance < min_distance:
-                        min_distance = distance
-                        nearest_station = station
+            if same_district_stations:
+                # Use first available station in same district (they're all nearby)
+                nearest_station = same_district_stations[0]
+                min_distance = 0.5  # Minimal distance for same district
+                logger.debug(f"Same district optimization: Using station in {current_district}")
+            else:
+                # Find nearest station normally for different districts
+                for station in remaining_stations:
+                    if station.get('lat') and station.get('long'):
+                        station_pos = (station['lat'], station['long'])
+                        distance = haversine(current_pos, station_pos, unit=Unit.KILOMETERS)
+
+                        if distance < min_distance:
+                            min_distance = distance
+                            nearest_station = station
 
             if not nearest_station:
                 break
 
-            # Calculate accurate travel time using routing service
+            # Calculate travel time with same-district optimization
             station_coords = (nearest_station['lat'], nearest_station['long'])
-            travel_info = self.travel_service.get_travel_time(current_pos, station_coords)
-            travel_time = travel_info['duration_minutes']
-            station_time = self.INSPECTION_TIME_MINUTES
 
-            # Calculate return journey time from this station using routing service
-            return_info = self.travel_service.get_travel_time(station_coords, self.HOME_LOCATION)
-            return_time = return_info['duration_minutes']
+            if min_distance <= 0.5:  # Same district optimization
+                # Use optimized travel service method for same district
+                travel_info = self.travel_service.get_same_district_travel_time()
+                travel_time = travel_info['duration_minutes']
+
+                # For same district, assume similar return time as previous station if available
+                if route_stations:
+                    return_time = route_stations[-1].get('return_time_minutes', 45.0)  # Use previous or default
+                else:
+                    return_time = 45.0  # Default return time for same district
+                logger.debug(f"Same district: skipping API calls for {nearest_station.get('name', 'station')}")
+            else:
+                # Calculate accurate travel time using routing service for different districts
+                travel_info = self.travel_service.get_travel_time(current_pos, station_coords)
+                travel_time = travel_info['duration_minutes']
+
+                # Calculate return journey time from this station using routing service
+                return_info = self.travel_service.get_travel_time(station_coords, self.HOME_LOCATION)
+                return_time = return_info['duration_minutes']
+
+            station_time = self.INSPECTION_TIME_MINUTES
 
             # Calculate time after this station including lunch break
             time_after_station = current_time_minutes + travel_time + station_time
@@ -299,13 +432,15 @@ class MultiDayPlanner:
             # Add return journey time and safety buffer
             final_time = time_after_station + return_time + self.SAFETY_BUFFER_MINUTES
 
-            if final_time > (17 * 60):  # 17:00 in minutes
-                logger.info(f"Day {day_number}: Stopping at {len(route_stations)} stations due to time constraint (would finish at {int(final_time//60):02d}:{int(final_time%60):02d})")
-                break
+            # Removed 17:00 time constraint - user gets all requested stations
+            # if final_time > (17 * 60):  # 17:00 in minutes
+            #     logger.info(f"Day {day_number}: Stopping at {len(route_stations)} stations due to time constraint")
+            #     break
 
             # Add station to route
             nearest_station['travel_distance_km'] = round(min_distance, 2)
             nearest_station['travel_time_minutes'] = round(travel_time, 1)
+            nearest_station['return_time_minutes'] = return_time  # Store for same-district optimization
             route_stations.append(nearest_station)
 
             # Update totals
@@ -456,28 +591,7 @@ class MultiDayPlanner:
         response_parts.append("## Overall Summary")
         response_parts.append(f"- **Total Stations**: {overall_stats['total_stations']}")
 
-        # Add station shortfall explanation if applicable
-        if requested_stations and actual_stations and requested_stations > actual_stations:
-            shortfall = requested_stations - actual_stations
-            response_parts.append(f"")
-            response_parts.append(f"⚠️ **Station Shortfall Notice**: You requested {requested_stations} stations, but only {actual_stations} stations could be safely planned.")
-            response_parts.append(f"")
-            response_parts.append(f"**Why only {actual_stations} stations?**")
-            response_parts.append(f"- **Time Constraints**: Must return home by 17:00 each day for safety")
-            response_parts.append(f"- **Travel Distances**: Longer routes between {province if isinstance(province, str) else ' & '.join(province)} require more time")
-            response_parts.append(f"- **Inspection Quality**: Ensuring adequate time for proper station inspections")
-            response_parts.append(f"- **Fatigue Prevention**: Avoiding overwork that could compromise safety")
-            response_parts.append(f"")
-            response_parts.append(f"**Options to get {requested_stations} stations:**")
-            response_parts.append(f"1. 🗓️ **Extend to 3 days** - More comfortable schedule with {requested_stations} stations")
-            response_parts.append(f"2. 🌅 **Earlier start time** - Begin at 08:00 instead of 09:00")
-            response_parts.append(f"3. 🌆 **Later end time** - Extend to 18:00 (requires safety consideration)")
-            response_parts.append(f"4. 🎯 **Focus on one province** - Either ชัยภูมิ or นครราชสีมา only")
-            response_parts.append(f"")
-            response_parts.append(f"**Would you like me to:**")
-            response_parts.append(f"- ✅ **Accept this {actual_stations}-station plan** (safer and more manageable)")
-            response_parts.append(f"- 🔄 **Replan for {requested_stations} stations** with one of the options above?")
-            response_parts.append(f"")
+        # Station shortfall notice removed - user gets what they request
 
         response_parts.append(f"- **Total Distance**: {overall_stats['total_distance']} km (over {len(daily_plans)} days)")
         response_parts.append(f"- **Total Time**: {overall_stats['total_time']} minutes")
@@ -707,6 +821,133 @@ I didn't understand your response. Here are your options:
 
 What would you like to do?"""
 
+    def _plan_by_districts(self, worth_districts: List[Dict], all_stations: List[Dict], requirements: Dict) -> List[Dict]:
+        """Plan route by processing districts in worth order with minimal API calls"""
+        daily_plans = []
+        remaining_districts = worth_districts.copy()
+        requested_days = requirements.get('days', 2)
+
+        for day in range(1, requested_days + 1):
+            if not remaining_districts:
+                break
+
+            day_plan = self._plan_single_day_by_districts(day, remaining_districts, all_stations)
+            daily_plans.append(day_plan)
+
+            # Remove completed districts
+            completed_districts = [s.get('district') for s in day_plan['stations']]
+            remaining_districts = [d for d in remaining_districts if d['district'] not in completed_districts]
+
+        return daily_plans
+
+    def _plan_single_day_by_districts(self, day_number: int, available_districts: List[Dict], all_stations: List[Dict]) -> Dict:
+        """Plan a single day focusing on complete districts to minimize travel between districts"""
+        current_pos = self.HOME_LOCATION
+        current_time_minutes = 9 * 60  # 9:00 AM
+        route_stations = []
+        total_distance = 0
+        total_time = 0
+        lunch_added = False
+        processed_districts = set()
+
+        logger.info(f"Day {day_number}: Planning with {len(available_districts)} available districts")
+
+        # Process districts in worth order
+        for district_analysis in available_districts:
+            district_name = district_analysis['district']
+
+            if district_name in processed_districts:
+                continue
+
+            # Get stations for this district
+            district_stations = [s for s in all_stations if s.get('district') == district_name]
+
+            if not district_stations:
+                continue
+
+            logger.info(f"Day {day_number}: Processing district '{district_name}' with {len(district_stations)} stations")
+
+            # Use cached travel time to district
+            if district_stations:
+                first_station = district_stations[0]
+                station_coords = (first_station.get('lat'), first_station.get('long'))
+
+                # Get travel time to district using cache
+                travel_info = self.travel_service.get_travel_time_with_cache(
+                    current_pos, station_coords, origin_district=None,
+                    destination_district=district_name, home_location=self.HOME_LOCATION
+                )
+
+                travel_to_district = travel_info['duration_minutes']
+
+                # Add all stations in this district (use minimal distances between them)
+                district_added = False
+                for station in district_stations:
+                    station_time = self.INSPECTION_TIME_MINUTES
+
+                    if not route_stations:
+                        time_for_station = travel_to_district + station_time
+                    else:
+                        same_district_info = self.travel_service.get_same_district_travel_time()
+                        time_for_station = same_district_info['duration_minutes'] + station_time
+
+                    # Check if we have time
+                    if current_time_minutes + time_for_station < 16 * 60:  # Before 4 PM
+                        if not district_added:
+                            total_distance += travel_info['distance_km']
+                            total_time += travel_to_district
+                            current_time_minutes += travel_to_district
+                            district_added = True
+                        else:
+                            same_district_info = self.travel_service.get_same_district_travel_time()
+                            total_distance += same_district_info['distance_km']
+                            total_time += same_district_info['duration_minutes']
+                            current_time_minutes += same_district_info['duration_minutes']
+
+                        # Add station
+                        station['travel_distance_km'] = same_district_info['distance_km'] if district_added else travel_info['distance_km']
+                        station['travel_time_minutes'] = same_district_info['duration_minutes'] if district_added else travel_info['duration_minutes']
+                        route_stations.append(station)
+
+                        total_time += station_time
+                        current_time_minutes += station_time
+                        current_pos = (station.get('lat'), station.get('long'))
+
+                        # Add lunch break if needed
+                        if not lunch_added and current_time_minutes >= 12 * 60:
+                            total_time += self.LUNCH_DURATION_MINUTES
+                            current_time_minutes += self.LUNCH_DURATION_MINUTES
+                            lunch_added = True
+                    else:
+                        break
+
+                if district_added:
+                    processed_districts.add(district_name)
+
+        # Calculate return journey
+        if route_stations:
+            last_station_coords = (route_stations[-1].get('lat'), route_stations[-1].get('long'))
+            return_info = self.travel_service.get_travel_time_with_cache(
+                last_station_coords, self.HOME_LOCATION,
+                origin_district=route_stations[-1].get('district'),
+                destination_district="Home", home_location=self.HOME_LOCATION
+            )
+            return_time = return_info['duration_minutes']
+            total_distance += return_info['distance_km']
+            total_time += return_time
+            final_return_time_minutes = current_time_minutes + return_time
+            return_time_str = f"{int(final_return_time_minutes//60):02d}:{int(final_return_time_minutes%60):02d}"
+        else:
+            return_time_str = "09:00"
+
+        return {
+            "day": day_number, "stations": route_stations,
+            "total_distance_km": round(total_distance, 2),
+            "total_time_minutes": round(total_time, 1),
+            "return_time": return_time_str, "lunch_break": lunch_added,
+            "districts_visited": list(processed_districts)
+        }
+
 def test_multi_day_planner():
     """Test the multi-day planner"""
     planner = MultiDayPlanner()
@@ -718,6 +959,19 @@ def test_multi_day_planner():
     print(f"Input: {test_input}")
     print("\nResult:")
     result = planner.plan_multi_day_inspection(test_input)
+    print(result)
+
+def test_multi_day_planner():
+    """Test the multi-day planner"""
+    planner = MultiDayPlanner()
+
+    # Test with district optimization
+    test_input = "find me 15 stations in ชัยภูมิ i want to go 2 day make a plan for me"
+
+    print("Testing district-optimized multi-day planner...")
+    print(f"Input: {test_input}")
+    print("\nResult:")
+    result = planner.plan_with_district_optimization(test_input)
     print(result)
 
 if __name__ == "__main__":

@@ -9,7 +9,6 @@ from .agents import (
     location_processing_node,
     database_query_node,
     route_planning_node,
-    plan_evaluation_node,
     response_generation_node,
     location_based_planning_node,
     step_by_step_planning_node,
@@ -48,7 +47,6 @@ class FMStationPlanner:
         workflow.add_node("location_processing", location_processing_node)
         workflow.add_node("database_query", database_query_node)
         workflow.add_node("route_planning", route_planning_node)
-        workflow.add_node("plan_evaluation", plan_evaluation_node)
         workflow.add_node("response_generation", response_generation_node)
         workflow.add_node("location_based_planning", location_based_planning_node)
         workflow.add_node("step_by_step_planning", step_by_step_planning_node)
@@ -82,14 +80,11 @@ class FMStationPlanner:
             }
         )
 
-        # From route planning to plan evaluation
-        workflow.add_edge("route_planning", "plan_evaluation")
+        # Direct from route planning to response generation
+        workflow.add_edge("route_planning", "response_generation")
 
-        # From step-by-step planning to plan evaluation
-        workflow.add_edge("step_by_step_planning", "plan_evaluation")
-
-        # From plan evaluation to response generation
-        workflow.add_edge("plan_evaluation", "response_generation")
+        # Direct from step-by-step planning to response generation
+        workflow.add_edge("step_by_step_planning", "response_generation")
 
         # All response paths end the workflow
         workflow.add_edge("response_generation", END)

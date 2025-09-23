@@ -218,40 +218,7 @@ Use 'name' for station name and 'freq' for frequency from the database."""
             system_prompt=system_prompt
         )
 
-    def optimize_route_with_ai(self,
-                               stations: List[Dict],
-                               constraints: Dict) -> List[int]:
-        """Use AI to suggest route optimizations"""
-
-        system_prompt = """You are a route optimization expert.
-        Given stations with coordinates and constraints, suggest the optimal visiting order.
-        Consider: total time, distance, and inspection requirements.
-        Return ONLY a JSON array of station indices in optimal order."""
-
-        prompt = f"""Optimize route for these stations:
-{json.dumps(stations, ensure_ascii=False, indent=2)}
-
-Constraints:
-- Max time: {constraints.get('max_time_minutes')} minutes
-- Inspection time per station: 10 minutes
-- Starting location: {constraints.get('start_location')}
-
-Return optimal order as JSON array of indices."""
-
-        response = self.complete(
-            prompt,
-            task_type="complex_reasoning",
-            system_prompt=system_prompt
-        )
-
-        try:
-            json_str = response.strip()
-            if "```" in json_str:
-                json_str = json_str.split("```")[1].replace("json", "").strip()
-            return json.loads(json_str)
-        except:
-            # Fallback to sequential order
-            return list(range(len(stations)))
+    # Removed AI route optimization - keeping it simple
 
     def get_total_cost(self) -> float:
         """Get total API costs for this session"""

@@ -40,6 +40,65 @@ class StationDatabase:
             logger.error(f"Error fetching stations: {e}")
             return []
 
+    def get_stations_with_custom_filters(self, province: str = None, limit: int = 1000) -> List[Dict]:
+        """
+        Get stations with custom filtering logic:
+        - EXCLUDE: submit_a_request == "ไม่ยื่น"
+        - EXCLUDE: on_air == False
+        - EXCLUDE: inspection_68 == "ตรวจแล้ว"
+        """
+        try:
+            query = self.client.table(self.table_name).select("*")
+
+            if province:
+                query = query.eq("province", province)
+
+            # Apply custom filters
+            response = query\
+                .neq("submit_a_request", "ไม่ยื่น")\
+                .eq("on_air", True)\
+                .neq("inspection_68", "ตรวจแล้ว")\
+                .limit(limit)\
+                .execute()
+
+            stations = response.data
+            logger.info(f"Found {len(stations)} stations with custom filters in {province or 'all provinces'}")
+            return stations
+
+        except Exception as e:
+            logger.error(f"Error fetching stations with custom filters: {e}")
+            return []
+
+    def get_valid_stations_by_district(self, provinces: List[str] = None) -> Dict[str, List[Dict]]:
+        """
+        Get stations grouped by district with custom filtering
+        Returns dict: {district_name: [stations]}
+        """
+        try:
+            all_stations = []
+
+            if provinces:
+                for province in provinces:
+                    stations = self.get_stations_with_custom_filters(province)
+                    all_stations.extend(stations)
+            else:
+                all_stations = self.get_stations_with_custom_filters()
+
+            # Group by district
+            districts = {}
+            for station in all_stations:
+                district = station.get("district", "Unknown")
+                if district not in districts:
+                    districts[district] = []
+                districts[district].append(station)
+
+            logger.info(f"Grouped {len(all_stations)} stations into {len(districts)} districts")
+            return districts
+
+        except Exception as e:
+            logger.error(f"Error getting stations by district: {e}")
+            return {}
+
     def get_stations_by_district(self,
                                 province: str,
                                 district: str,

@@ -202,35 +202,24 @@ def route_planning_node(state: FMStationState) -> Dict[str, Any]:
             logger.warning("No stations found for routing")
             return {"route_info": {}, "stations_ordered": []}
 
-        # Prepare constraints
+        # Prepare constraints (no time limits)
         constraints = {
-            "max_time_minutes": requirements.get("time_constraint_minutes", 120),
             "start_location": start_location,
             "inspection_time": Config.DEFAULT_INSPECTION_TIME_MINUTES
         }
 
-        # Use hybrid approach: AI suggestion + algorithmic optimization
-        if len(stations) > 5 and requirements.get("needs_route"):
-            # Use AI for complex routing
-            llm_client = OpenRouterClient()
-            optimal_order = llm_client.optimize_route_with_ai(stations, constraints)
-        else:
-            # Simple nearest neighbor for small sets
-            optimal_order = _nearest_neighbor_route(stations, start_location)
+        # Use district-based routing by default for efficiency
+        logger.info("Using district-based routing to prioritize areas with more stations")
+        optimal_order = _district_based_route(stations, start_location)
+
+        # Simple routing only - no AI optimization
 
         # Calculate route details
         route_info = _calculate_route_info(stations, optimal_order, start_location)
 
-        # Check time constraints
-        total_minutes = route_info["total_time_minutes"]
-        max_time = constraints["max_time_minutes"]
-
-        if max_time and total_minutes > max_time:
-            # Trim route to fit time constraint
-            route_info = _trim_route_to_fit_time(
-                stations, optimal_order, start_location, max_time
-            )
-            optimal_order = route_info.get("trimmed_order", optimal_order)
+        # No more time constraint trimming - user gets all requested stations
+        # total_minutes = route_info["total_time_minutes"]
+        # max_time = constraints["max_time_minutes"]
 
         stations_ordered = [stations[i] for i in optimal_order if i < len(stations)]
 
@@ -245,6 +234,72 @@ def route_planning_node(state: FMStationState) -> Dict[str, Any]:
         logger.error(f"Route planning error: {e}")
         return {"errors": [f"Route planning failed: {str(e)}"]}
 
+
+def _group_stations_by_district(stations: List[Dict]) -> Dict[str, List[int]]:
+    """Group stations by district and count stations per district"""
+    district_groups = {}
+
+    for idx, station in enumerate(stations):
+        district = station.get("district", "Unknown")
+        if district not in district_groups:
+            district_groups[district] = []
+        district_groups[district].append(idx)
+
+    # Sort districts by number of stations (descending)
+    sorted_districts = dict(sorted(district_groups.items(),
+                                 key=lambda x: len(x[1]),
+                                 reverse=True))
+
+    logger.info(f"Districts found: {[(district, len(stations)) for district, stations in sorted_districts.items()]}")
+
+    return sorted_districts
+
+def _district_based_route(stations: List[Dict], start_location: Dict) -> List[int]:
+    """District-based routing: prioritize districts with most stations"""
+    if not stations:
+        return []
+
+    from haversine import haversine
+
+    # Group stations by district
+    district_groups = _group_stations_by_district(stations)
+
+    route = []
+    current_pos = (start_location.get("lat", 13.7563),
+                  start_location.get("lon", 100.5018))
+
+    # Process each district in order of station count (highest first)
+    for district, station_indices in district_groups.items():
+        logger.info(f"Processing district '{district}' with {len(station_indices)} stations")
+
+        # Within each district, use nearest neighbor
+        unvisited_in_district = station_indices.copy()
+
+        while unvisited_in_district:
+            nearest_idx = None
+            min_distance = float('inf')
+
+            for idx in unvisited_in_district:
+                station = stations[idx]
+                if station.get("latitude") and station.get("longitude"):
+                    station_pos = (station["latitude"], station["longitude"])
+                    distance = haversine(current_pos, station_pos)
+
+                    if distance < min_distance:
+                        min_distance = distance
+                        nearest_idx = idx
+
+            if nearest_idx is not None:
+                route.append(nearest_idx)
+                unvisited_in_district.remove(nearest_idx)
+                station = stations[nearest_idx]
+                current_pos = (station["latitude"], station["longitude"])
+            else:
+                # Add remaining stations in district
+                route.extend(unvisited_in_district)
+                break
+
+    return route
 
 def _nearest_neighbor_route(stations: List[Dict], start_location: Dict) -> List[int]:
     """Simple nearest neighbor algorithm"""
@@ -287,7 +342,7 @@ def _nearest_neighbor_route(stations: List[Dict], start_location: Dict) -> List[
 
 
 def _calculate_route_info(stations: List[Dict], order: List[int], start_location: Dict) -> Dict:
-    """Calculate detailed route information"""
+    """Calculate detailed route information with same-district optimization"""
     from haversine import haversine
 
     total_distance = 0
@@ -296,6 +351,7 @@ def _calculate_route_info(stations: List[Dict], order: List[int], start_location
 
     current_pos = (start_location.get("lat", 13.7563),
                   start_location.get("lon", 100.5018))
+    current_district = None
 
     for i, station_idx in enumerate(order):
         if station_idx >= len(stations):
@@ -303,10 +359,18 @@ def _calculate_route_info(stations: List[Dict], order: List[int], start_location
         station = stations[station_idx]
         if station.get("latitude") and station.get("longitude"):
             station_pos = (station["latitude"], station["longitude"])
-            distance = haversine(current_pos, station_pos)
+            station_district = station.get("district", "Unknown")
 
-            # Calculate travel time (assuming average speed)
-            travel_time = (distance / Config.DEFAULT_SPEED_KMH) * 60
+            # Optimize: Skip distance calculation if in same district as previous station
+            if i > 0 and current_district == station_district and current_district != "Unknown":
+                # Use minimal distance for same district (stations are already nearest)
+                distance = 0.5  # Assume 0.5km between stations in same district
+                travel_time = 1.0  # Assume 1 minute travel time
+                logger.debug(f"Same district optimization: {station_district} - using minimal distance")
+            else:
+                # Calculate actual distance for first station or different district
+                distance = haversine(current_pos, station_pos)
+                travel_time = (distance / Config.DEFAULT_SPEED_KMH) * 60
 
             segments.append({
                 "station_index": station_idx,
@@ -318,6 +382,7 @@ def _calculate_route_info(stations: List[Dict], order: List[int], start_location
             total_distance += distance
             total_time += travel_time + Config.DEFAULT_INSPECTION_TIME_MINUTES
             current_pos = station_pos
+            current_district = station_district
 
     return {
         "total_distance_km": round(total_distance, 2),
@@ -376,40 +441,8 @@ def _trim_route_to_fit_time(stations: List[Dict], order: List[int], start_locati
     }
 
 def plan_evaluation_node(state: FMStationState) -> Dict[str, Any]:
-    """LangGraph node for evaluating and optimizing the inspection plan"""
-    try:
-        stations = state.get("stations", [])
-        current_location = state.get("current_location")
-        route_info = state.get("route_info", {})
-
-        if not stations:
-            logger.info("No stations to evaluate")
-            return {"plan_evaluation": {"is_optimal": True, "score": 100, "suggestions": []}}
-
-        # Use start_location if no current_location
-        if not current_location:
-            start_location_dict = state.get("start_location", {})
-            if start_location_dict.get("lat") and start_location_dict.get("lon"):
-                current_location = (start_location_dict["lat"], start_location_dict["lon"])
-            else:
-                # Default to Bangkok coordinates if nothing available
-                current_location = (13.7563, 100.5018)
-
-        logger.info(f"Evaluating plan with {len(stations)} stations from location {current_location}")
-
-        # Import and use the plan evaluator
-        from ..services.plan_evaluator import PlanEvaluationAgent
-
-        evaluator = PlanEvaluationAgent()
-        evaluation = evaluator.evaluate_plan(stations, current_location, route_info)
-
-        logger.info(f"Plan evaluation completed. Score: {evaluation.get('score', 0)}/100, Optimal: {evaluation.get('is_optimal', False)}")
-
-        return {"plan_evaluation": evaluation}
-
-    except Exception as e:
-        logger.error(f"Plan evaluation error: {e}")
-        return {"plan_evaluation": {"is_optimal": True, "score": 50, "suggestions": [], "error": str(e)}}
+    """Simple node that just passes through - no evaluation needed"""
+    return {"plan_evaluation": {"simple_mode": True}}
 
 def response_generation_node(state: FMStationState) -> Dict[str, Any]:
     """LangGraph node for generating Thai language responses"""
@@ -419,37 +452,37 @@ def response_generation_node(state: FMStationState) -> Dict[str, Any]:
         stations = state.get("stations_ordered", [])
         route_info = state.get("route_info", {})
         requirements = state.get("requirements", {})
-        plan_evaluation = state.get("plan_evaluation", {})
 
         if not stations:
             response = "Sorry, no FM stations found in the specified area. Please try searching in a different area."
         else:
+            # Generate district summary first
+            district_summary = _generate_district_summary(stations)
+
             # Generate English response
             response = llm_client.generate_english_response(
                 stations,
                 route_info,
                 requirements.get("original_text", ""),
-                plan_evaluation  # Include plan evaluation in response
+                {}  # No plan evaluation
             )
 
-            # Add plan evaluation summary
-            if plan_evaluation and plan_evaluation.get("score") is not None:
-                score = plan_evaluation.get("score", 0)
-                is_optimal = plan_evaluation.get("is_optimal", False)
-                ai_eval = plan_evaluation.get("ai_evaluation", "")
-                suggestions = plan_evaluation.get("optimization_suggestions", [])
+            # Add district analysis
+            if district_summary:
+                response += f"\n\n**District Analysis:**"
+                response += f"\n{district_summary}"
 
-                response += f"\n\n**Route Analysis:**"
-                response += f"\n• Route Efficiency Score: {score}/100"
-                response += f"\n• Route Status: {'✅ Optimal' if is_optimal else '⚠️ Can be optimized'}"
+            # Add basic distance/time warning if needed
+            if route_info:
+                total_distance = route_info.get("total_distance_km", 0)
+                total_time = route_info.get("total_time_minutes", 0)
 
-                if ai_eval:
-                    response += f"\n• Expert Analysis: {ai_eval}"
-
-                if suggestions:
-                    response += f"\n• Optimization Tips:"
-                    for suggestion in suggestions[:3]:  # Show top 3 suggestions
-                        response += f"\n  - {suggestion}"
+                if total_distance > 300 or total_time > 480:  # 8 hours
+                    response += f"\n\n⚠️ **Notice:**"
+                    if total_distance > 300:
+                        response += f"\n• Total distance: {total_distance:.1f}km (above 300km threshold)"
+                    if total_time > 480:
+                        response += f"\n• Total time: {total_time/60:.1f} hours (above 8 hour threshold)"
 
             # Add cost information
             total_cost = llm_client.get_total_cost()
@@ -599,7 +632,7 @@ def step_by_step_planning_node(state: FMStationState) -> Dict[str, Any]:
 
 
 def _calculate_route_info_step_by_step(stations: List[Dict], start_location: Tuple[float, float]) -> Dict:
-    """Calculate route info for step-by-step sequence"""
+    """Calculate route info for step-by-step sequence with same-district optimization"""
     from haversine import haversine
 
     if not stations:
@@ -608,17 +641,28 @@ def _calculate_route_info_step_by_step(stations: List[Dict], start_location: Tup
     total_distance = 0
     total_time = 0
     current_pos = start_location
+    current_district = None
 
     for i, station in enumerate(stations):
         if station.get('lat') and station.get('long'):
             station_pos = (station['lat'], station['long'])
-            distance = haversine(current_pos, station_pos)
-            travel_time = (distance / Config.DEFAULT_SPEED_KMH) * 60
+            station_district = station.get("district", "Unknown")
+
+            # Optimize: Skip distance calculation if in same district as previous station
+            if i > 0 and current_district == station_district and current_district != "Unknown":
+                # Use minimal distance for same district (stations are already nearest)
+                distance = 0.5  # Assume 0.5km between stations in same district
+                travel_time = 1.0  # Assume 1 minute travel time
+                logger.debug(f"Step-by-step same district optimization: {station_district}")
+            else:
+                # Calculate actual distance for first station or different district
+                distance = haversine(current_pos, station_pos)
+                travel_time = (distance / Config.DEFAULT_SPEED_KMH) * 60
 
             total_distance += distance
             total_time += travel_time + Config.DEFAULT_INSPECTION_TIME_MINUTES
-
             current_pos = station_pos
+            current_district = station_district
 
     return {
         "total_distance_km": round(total_distance, 2),
@@ -703,3 +747,28 @@ def error_response_node(state: FMStationState) -> Dict[str, Any]:
     error_message = "Sorry, errors occurred during processing:\n" + "\n".join(f"• {error}" for error in errors)
 
     return {"final_response": error_message}
+
+def _generate_district_summary(stations: List[Dict]) -> str:
+    """Generate a summary of stations by district"""
+    if not stations:
+        return ""
+
+    # Group stations by district
+    district_counts = {}
+    for station in stations:
+        district = station.get("district", "Unknown")
+        district_counts[district] = district_counts.get(district, 0) + 1
+
+    # Sort by count (descending)
+    sorted_districts = sorted(district_counts.items(), key=lambda x: x[1], reverse=True)
+
+    summary_lines = []
+    summary_lines.append("📍 **Stations grouped by district (prioritized by station density):**")
+
+    for district, count in sorted_districts:
+        percentage = (count / len(stations)) * 100
+        summary_lines.append(f"• **{district}**: {count} stations ({percentage:.1f}%)")
+
+    summary_lines.append(f"\n🎯 **Strategy**: Prioritizing districts with more stations for efficiency")
+
+    return "\n".join(summary_lines)

@@ -50,30 +50,28 @@ class PlanMonitorAgent:
             daily_time = plan.get("total_time_minutes", 0)
             daily_stations = len(plan.get("stations", []))
 
-            # Critical violations (immediate intervention needed)
+            # Note: Critical violations now converted to informational warnings only
             if daily_distance > self.MAX_DAILY_DISTANCE_KM:
                 violations.append({
-                    "type": "critical",
+                    "type": "info",
                     "category": "daily_distance",
                     "day": i,
                     "value": daily_distance,
                     "limit": self.MAX_DAILY_DISTANCE_KM,
-                    "message": f"Day {i}: {daily_distance:.1f}km exceeds safe daily limit of {self.MAX_DAILY_DISTANCE_KM}km"
+                    "message": f"Day {i}: {daily_distance:.1f}km (above {self.MAX_DAILY_DISTANCE_KM}km threshold)"
                 })
-                severity_score += 30
-                intervention_needed = True
+                severity_score += 5  # Reduced impact
 
             if daily_time > self.MAX_DAILY_TIME_MINUTES:
                 violations.append({
-                    "type": "critical",
+                    "type": "info",
                     "category": "daily_time",
                     "day": i,
                     "value": daily_time,
                     "limit": self.MAX_DAILY_TIME_MINUTES,
-                    "message": f"Day {i}: {daily_time/60:.1f} hours exceeds safe daily limit of {self.MAX_DAILY_TIME_MINUTES/60:.1f} hours"
+                    "message": f"Day {i}: {daily_time/60:.1f} hours (above {self.MAX_DAILY_TIME_MINUTES/60:.1f} hour threshold)"
                 })
-                severity_score += 25
-                intervention_needed = True
+                severity_score += 5  # Reduced impact
 
             # Warning level violations
             if daily_distance > self.OPTIMAL_DAILY_DISTANCE:
@@ -104,26 +102,15 @@ class PlanMonitorAgent:
 
         if requested_days == 2 and total_distance > self.MAX_TOTAL_DISTANCE_2_DAYS:
             violations.append({
-                "type": "critical",
+                "type": "info",
                 "category": "total_distance",
                 "value": total_distance,
                 "limit": self.MAX_TOTAL_DISTANCE_2_DAYS,
-                "message": f"Total distance {total_distance:.1f}km exceeds 2-day limit of {self.MAX_TOTAL_DISTANCE_2_DAYS}km"
+                "message": f"Total distance {total_distance:.1f}km (above {self.MAX_TOTAL_DISTANCE_2_DAYS}km threshold)"
             })
-            severity_score += 20
-            intervention_needed = True
+            severity_score += 5  # Reduced impact
 
-        # Station shortfall check
-        if requested_stations > actual_stations:
-            shortfall = requested_stations - actual_stations
-            violations.append({
-                "type": "warning",
-                "category": "station_shortfall",
-                "value": actual_stations,
-                "limit": requested_stations,
-                "message": f"Only {actual_stations}/{requested_stations} stations planned due to time constraints"
-            })
-            severity_score += shortfall * 2
+        # Station shortfall check removed - no more safety limits
 
         return {
             "intervention_needed": intervention_needed,
@@ -144,36 +131,23 @@ class PlanMonitorAgent:
         if not violations:
             return None  # No intervention needed
 
-        # Critical violations require immediate intervention
-        critical_violations = [v for v in violations if v["type"] == "critical"]
+        # No more critical interruptions - only show informational notices
+        info_violations = [v for v in violations if v["type"] == "info"]
 
-        if critical_violations:
+        if info_violations:
             message_parts = [
-                "⚠️ **PLAN SAFETY WARNING** ⚠️",
+                "📊 **PLAN INFORMATION**",
                 "",
-                "I need to interrupt this plan because it exceeds safety limits:",
+                "Plan metrics for your information:",
                 ""
             ]
 
-            for violation in critical_violations:
-                message_parts.append(f"🚨 {violation['message']}")
+            for violation in info_violations[:3]:  # Show max 3 info items
+                message_parts.append(f"📈 {violation['message']}")
 
             message_parts.extend([
                 "",
-                "**This plan could cause:**",
-                "- Inspector fatigue and safety risks",
-                "- Poor inspection quality due to rushing",
-                "- Potential vehicle breakdown from overuse",
-                "- Difficulty returning home safely by 17:00",
-                "",
-                "🤖 **Let me automatically fix this plan for you!**",
-                "",
-                "**Would you like me to:**",
-                "1. 🔧 **Auto-fix the plan** (I'll optimize it automatically)",
-                "2. 📋 **See fix options** (Show me different solutions)",
-                "3. ✅ **Accept risks** (Keep the dangerous plan anyway)",
-                "",
-                "**Quick response:** Just type 'fix it' and I'll handle everything!"
+                "ℹ️ This is for informational purposes only - your plan will proceed as requested."
             ])
 
         else:

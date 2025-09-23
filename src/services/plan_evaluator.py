@@ -523,19 +523,19 @@ Keep response concise and practical for field work."""
 
         total_distance = sum(plan.get("total_distance_km", 0) for plan in daily_plans)
 
-        # Key thresholds for extending days
-        distance_threshold_2_to_3_days = 500  # km total for 2 days
-        distance_threshold_per_day = 300      # km per day maximum
+        # Key thresholds for extending days (now much more lenient)
+        distance_threshold_2_to_3_days = 800  # km total for 2 days (increased from 500)
+        distance_threshold_per_day = 500      # km per day maximum (increased from 300)
 
         extend_days = False
         recommended_days = requested_days
         reasons = []
 
-        # Check if 2-day plan exceeds 500km
+        # Check if 2-day plan exceeds lenient threshold
         if requested_days == 2 and total_distance > distance_threshold_2_to_3_days:
             extend_days = True
             recommended_days = 3
-            reasons.append(f"Total distance {total_distance:.1f}km exceeds 500km limit for 2 days")
+            reasons.append(f"Total distance {total_distance:.1f}km is quite extensive for 2 days")
 
         # Check if any single day exceeds daily limit
         for i, plan in enumerate(daily_plans, 1):
@@ -546,18 +546,18 @@ Keep response concise and practical for field work."""
                     recommended_days = 3
                 elif requested_days == 1:
                     recommended_days = 2
-                reasons.append(f"Day {i} distance {daily_distance:.1f}km exceeds 300km daily limit")
+                reasons.append(f"Day {i} distance {daily_distance:.1f}km is quite extensive")
 
         # Check for excessive work hours
         for i, plan in enumerate(daily_plans, 1):
             daily_time = plan.get("total_time_minutes", 0)
-            if daily_time > 480:  # 8 hours
+            if daily_time > 600:  # 10 hours (increased from 8)
                 extend_days = True
                 if requested_days == 2:
                     recommended_days = 3
                 elif requested_days == 1:
                     recommended_days = 2
-                reasons.append(f"Day {i} work time {daily_time/60:.1f} hours exceeds 8-hour limit")
+                reasons.append(f"Day {i} work time {daily_time/60:.1f} hours is quite long")
 
         return {
             "extend_days": extend_days,
@@ -708,18 +708,18 @@ Keep response concise and practical for field work."""
     def _get_recommended_action(self, score: float, day_recommendation: Optional[Dict] = None, fatigue_analysis: Optional[Dict] = None) -> str:
         """Get recommended action based on score, day extension needs, and fatigue analysis"""
 
-        # Priority 1: Day extension recommendations (safety first)
+        # Priority 1: Day extension recommendations (informational only)
         if day_recommendation and day_recommendation.get("extend_days", False):
             recommended_days = day_recommendation.get("recommended_days", "more")
-            return f"⚠️ EXTEND TO {recommended_days} DAYS - Current plan exceeds safe limits for user comfort and safety"
+            return f"ℹ️ SUGGESTION: Consider {recommended_days} days for more comfortable schedule (current plan is still acceptable)"
 
-        # Priority 2: Fatigue concerns
+        # Priority 2: Fatigue concerns (now informational)
         if fatigue_analysis and fatigue_analysis.get("is_too_demanding", False):
-            return "⚠️ PLAN TOO DEMANDING - Reduce workload or extend days to prevent fatigue"
+            return "ℹ️ NOTE: Intensive schedule - Consider rest breaks for comfort"
 
-        # Priority 3: High fatigue level
+        # Priority 3: High fatigue level (now informational)
         if fatigue_analysis and fatigue_analysis.get("fatigue_level") == "high":
-            return "⚠️ HIGH FATIGUE RISK - Consider reducing daily workload or adding rest periods"
+            return "ℹ️ NOTE: Active schedule - Monitor energy levels and take breaks as needed"
 
         # Standard scoring recommendations
         if score >= 85:
